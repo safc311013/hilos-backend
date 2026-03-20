@@ -10,6 +10,13 @@ const generarToken = (id) => {
   });
 };
 
+router.get('/test', (req, res) => {
+  res.json({
+    ok: true,
+    mensaje: 'Ruta de auth funcionando correctamente',
+  });
+});
+
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
