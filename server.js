@@ -21,8 +21,46 @@ app.use(cors());
 app.use(express.json());
 app.use(morgan('dev'));
 
+let isConnected = false;
+let connectionPromise = null;
+
+async function conectarMongo() {
+  if (isConnected) return;
+  if (connectionPromise) return connectionPromise;
+
+  connectionPromise = mongoose
+    .connect(process.env.MONGO_URI)
+    .then(() => {
+      isConnected = true;
+      console.log('MongoDB conectado correctamente');
+    })
+    .catch((error) => {
+      connectionPromise = null;
+      console.error('Error al conectar MongoDB:', error.message);
+      throw error;
+    });
+
+  return connectionPromise;
+}
+
 app.get('/', (req, res) => {
   res.json({ mensaje: 'API Hilos funcionando correctamente' });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, mensaje: 'Backend activo' });
+});
+
+app.use(async (req, res, next) => {
+  try {
+    await conectarMongo();
+    next();
+  } catch (error) {
+    res.status(500).json({
+      mensaje: 'Error al conectar con la base de datos',
+      error: error.message,
+    });
+  }
 });
 
 app.use('/api/auth', authRoutes);
@@ -71,18 +109,17 @@ app.get('/api/realtime/events', async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-const iniciarServidor = async () => {
-  try {
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log('MongoDB conectado correctamente');
-
-    app.listen(PORT, () => {
-      console.log(`Servidor backend corriendo en http://localhost:${PORT}`);
+if (process.env.VERCEL !== '1') {
+  conectarMongo()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(`Servidor backend corriendo en http://localhost:${PORT}`);
+      });
+    })
+    .catch((error) => {
+      console.error('No se pudo iniciar el servidor:', error.message);
+      process.exit(1);
     });
-  } catch (error) {
-    console.error('Error al conectar MongoDB:', error.message);
-    process.exit(1);
-  }
-};
+}
 
-iniciarServidor();
+module.exports = app;
