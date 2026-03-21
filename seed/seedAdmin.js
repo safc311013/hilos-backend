@@ -15,7 +15,7 @@ const seedAdmin = async () => {
 
     const admin = await Usuario.create({
       nombre: 'Administrador',
-      email: 'admin@hilos.local',
+      email: 'sergio@hilos.com',
       password: 'Kalito22',
       rol: 'admin',
       activo: true,
