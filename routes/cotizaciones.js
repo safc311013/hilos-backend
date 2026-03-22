@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const Cotizacion = require('../models/Cotizacion');
+const Consecutivo = require('../models/Consecutivo');
 const { proteger, bloquearRoles } = require('../middleware/authMiddleware');
 const { sendEvent } = require('../utils/sseManager');
 
@@ -97,9 +98,46 @@ const resolverPrefijoFolio = (payload = {}, formato, cotizacionActual = null) =>
   return PREFIJOS_FOLIO[formato] || 'CT';
 };
 
-const generarBaseFolio = (prefijo, fechaCotizacion) => {
+const obtenerSiguienteFolioConsecutivo = async ({
+  prefijoFolio,
+  fechaCotizacion,
+}) => {
   const fecha = obtenerFechaISOParaFolio(fechaCotizacion);
-  return `${prefijo}-${fecha}`;
+  const key = `${prefijoFolio}-${fecha}`;
+
+  const consecutivo = await Consecutivo.findOneAndUpdate(
+    { key },
+    {
+      $setOnInsert: {
+        key,
+        prefijo: prefijoFolio,
+        fecha,
+      },
+      $inc: {
+        ultimoNumero: 1,
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+    }
+  );
+
+  return `${prefijoFolio}-${fecha}-${String(consecutivo.ultimoNumero).padStart(3, '0')}`;
+};
+
+const validarFolioDisponible = async ({ folio, excluirId = null }) => {
+  const filtro = { folio };
+
+  if (excluirId) {
+    filtro._id = { $ne: excluirId };
+  }
+
+  const existente = await Cotizacion.findOne(filtro).lean();
+
+  if (existente) {
+    throw new Error(`El folio "${folio}" ya existe`);
+  }
 };
 
 const calcularLineaCompra = (item) => {
@@ -255,56 +293,33 @@ const calcularTotales = (productos, formato) => {
   };
 };
 
-const obtenerFolioDisponible = async ({
-  prefijoFolio,
+const resolverFolio = async ({
+  payload,
+  formato,
   fechaCotizacion,
-  folioSolicitado,
-  excluirId = null,
+  cotizacionActual = null,
 }) => {
-  const folioLimpio = normalizarTexto(folioSolicitado).toUpperCase();
+  const folioSolicitado = normalizarTexto(payload.folio).toUpperCase();
 
-  if (folioLimpio) {
-    const filtro = { folio: folioLimpio };
+  if (folioSolicitado) {
+    await validarFolioDisponible({
+      folio: folioSolicitado,
+      excluirId: cotizacionActual?._id || null,
+    });
 
-    if (excluirId) {
-      filtro._id = { $ne: excluirId };
-    }
-
-    const existente = await Cotizacion.findOne(filtro).lean();
-
-    if (existente) {
-      throw new Error(`El folio "${folioLimpio}" ya existe`);
-    }
-
-    return folioLimpio;
+    return folioSolicitado;
   }
 
-  const base = generarBaseFolio(prefijoFolio, fechaCotizacion);
-  const regex = new RegExp(`^${escaparRegex(base)}(?:-(\\d{2}))?$`, 'i');
-
-  const filtro = { folio: regex };
-
-  if (excluirId) {
-    filtro._id = { $ne: excluirId };
+  if (cotizacionActual?.folio) {
+    return cotizacionActual.folio;
   }
 
-  const existentes = await Cotizacion.find(filtro).select('folio').lean();
+  const prefijoFolio = resolverPrefijoFolio(payload, formato, cotizacionActual);
 
-  if (!existentes.length) {
-    return base;
-  }
-
-  const suffixes = existentes
-    .map((doc) => String(doc.folio || '').toUpperCase())
-    .map((folio) => {
-      if (folio === base.toUpperCase()) return 1;
-      const match = folio.match(/-(\d{2})$/);
-      return match ? Number(match[1]) : 1;
-    })
-    .filter((n) => Number.isFinite(n));
-
-  const siguiente = (Math.max(...suffixes, 1) || 1) + 1;
-  return `${base}-${String(siguiente).padStart(2, '0')}`;
+  return await obtenerSiguienteFolioConsecutivo({
+    prefijoFolio,
+    fechaCotizacion,
+  });
 };
 
 const construirPayloadCotizacion = async (
@@ -329,13 +344,12 @@ const construirPayloadCotizacion = async (
 
   const productos = normalizarProductos(entradaProductos, formato);
   const totales = calcularTotales(productos, formato);
-  const prefijoFolio = resolverPrefijoFolio(payload, formato, cotizacionActual);
 
-  const folio = await obtenerFolioDisponible({
-    prefijoFolio,
+  const folio = await resolverFolio({
+    payload,
+    formato,
     fechaCotizacion,
-    folioSolicitado: payload.folio || cotizacionActual?.folio,
-    excluirId: cotizacionActual?._id || null,
+    cotizacionActual,
   });
 
   return {

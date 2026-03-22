@@ -109,9 +109,9 @@ const cotizacionSchema = new mongoose.Schema(
     folio: {
       type: String,
       required: true,
-      unique: true,
       trim: true,
       uppercase: true,
+      unique: true,
       index: true,
     },
     tipo: {
