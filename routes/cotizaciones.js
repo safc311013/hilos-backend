@@ -6,7 +6,7 @@ const { sendEvent } = require('../utils/sseManager');
 
 const router = express.Router();
 
-router.use(proteger, bloquearRoles('cajero'));
+router.use(proteger);
 
 const FORMATOS = {
   VENTA: 'ventas',
@@ -16,6 +16,10 @@ const FORMATOS = {
 const TIPOS = {
   COMPRA: 'COMPRA',
   CONSIGNACION: 'CONSIGNACION',
+};
+
+const ORIGENES = {
+  POS_COTIZACION: 'pos_cotizacion_simple',
 };
 
 const PREFIJOS_FOLIO = {
@@ -80,8 +84,20 @@ const obtenerFechaISOParaFolio = (valor) => {
   return fecha.toISOString().slice(0, 10);
 };
 
-const generarBaseFolio = (formato, fechaCotizacion) => {
-  const prefijo = PREFIJOS_FOLIO[formato] || 'CT';
+const resolverPrefijoFolio = (payload = {}, formato, cotizacionActual = null) => {
+  const prefijoSolicitado = normalizarTexto(payload.prefijoFolio).toUpperCase();
+  if (prefijoSolicitado) return prefijoSolicitado;
+
+  const origen = normalizarTexto(payload.origen || cotizacionActual?.origen).toLowerCase();
+
+  if (origen === ORIGENES.POS_COTIZACION) {
+    return 'CV';
+  }
+
+  return PREFIJOS_FOLIO[formato] || 'CT';
+};
+
+const generarBaseFolio = (prefijo, fechaCotizacion) => {
   const fecha = obtenerFechaISOParaFolio(fechaCotizacion);
   return `${prefijo}-${fecha}`;
 };
@@ -240,7 +256,7 @@ const calcularTotales = (productos, formato) => {
 };
 
 const obtenerFolioDisponible = async ({
-  formato,
+  prefijoFolio,
   fechaCotizacion,
   folioSolicitado,
   excluirId = null,
@@ -263,7 +279,7 @@ const obtenerFolioDisponible = async ({
     return folioLimpio;
   }
 
-  const base = generarBaseFolio(formato, fechaCotizacion);
+  const base = generarBaseFolio(prefijoFolio, fechaCotizacion);
   const regex = new RegExp(`^${escaparRegex(base)}(?:-(\\d{2}))?$`, 'i');
 
   const filtro = { folio: regex };
@@ -313,9 +329,10 @@ const construirPayloadCotizacion = async (
 
   const productos = normalizarProductos(entradaProductos, formato);
   const totales = calcularTotales(productos, formato);
+  const prefijoFolio = resolverPrefijoFolio(payload, formato, cotizacionActual);
 
   const folio = await obtenerFolioDisponible({
-    formato,
+    prefijoFolio,
     fechaCotizacion,
     folioSolicitado: payload.folio || cotizacionActual?.folio,
     excluirId: cotizacionActual?._id || null,
@@ -341,10 +358,18 @@ const construirPayloadCotizacion = async (
   };
 };
 
-router.get('/', async (req, res) => {
+router.get('/', bloquearRoles('cajero'), async (req, res) => {
   try {
-    const { q, formato, tipo, estatus, cliente, folio, desde, hasta } =
-      req.query;
+    const {
+      q,
+      formato,
+      tipo,
+      estatus,
+      cliente,
+      folio,
+      desde,
+      hasta,
+    } = req.query;
 
     const filtro = {};
 
@@ -415,6 +440,7 @@ router.post('/', async (req, res) => {
     const cotizacion = await Cotizacion.create(payload);
 
     sendEvent('ventas', { accion: 'cotizacion_creada', cotizacion });
+
     res.status(201).json(cotizacion);
   } catch (error) {
     res.status(400).json({
@@ -427,7 +453,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', bloquearRoles('cajero'), async (req, res) => {
   try {
     const cotizacionActual = await Cotizacion.findById(req.params.id);
 
@@ -466,7 +492,7 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', bloquearRoles('cajero'), async (req, res) => {
   try {
     const cotizacion = await Cotizacion.findByIdAndDelete(req.params.id);
 
