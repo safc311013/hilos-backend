@@ -1,10 +1,12 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const Cotizacion = require('../models/Cotizacion');
-const { proteger } = require('../middleware/authMiddleware');
+const { proteger, bloquearRoles } = require('../middleware/authMiddleware');
 const { sendEvent } = require('../utils/sseManager');
 
 const router = express.Router();
+
+router.use(proteger, bloquearRoles('cajero'));
 
 const FORMATOS = {
   VENTA: 'ventas',
@@ -150,11 +152,15 @@ const normalizarProductos = (entrada, formato) => {
     }
 
     if (cantidad <= 0) {
-      throw new Error(`La cantidad del producto "${nombreProducto}" debe ser mayor a 0`);
+      throw new Error(
+        `La cantidad del producto "${nombreProducto}" debe ser mayor a 0`
+      );
     }
 
     if (precioUnitario < 0) {
-      throw new Error(`El precio del producto "${nombreProducto}" no puede ser negativo`);
+      throw new Error(
+        `El precio del producto "${nombreProducto}" no puede ser negativo`
+      );
     }
 
     const base = {
@@ -285,7 +291,10 @@ const obtenerFolioDisponible = async ({
   return `${base}-${String(siguiente).padStart(2, '0')}`;
 };
 
-const construirPayloadCotizacion = async (payload = {}, cotizacionActual = null) => {
+const construirPayloadCotizacion = async (
+  payload = {},
+  cotizacionActual = null
+) => {
   const { formato, tipo } = resolverFormatoYTipo(payload);
 
   const cliente = normalizarTexto(payload.cliente);
@@ -332,18 +341,10 @@ const construirPayloadCotizacion = async (payload = {}, cotizacionActual = null)
   };
 };
 
-router.get('/', proteger, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const {
-      q,
-      formato,
-      tipo,
-      estatus,
-      cliente,
-      folio,
-      desde,
-      hasta,
-    } = req.query;
+    const { q, formato, tipo, estatus, cliente, folio, desde, hasta } =
+      req.query;
 
     const filtro = {};
 
@@ -351,7 +352,10 @@ router.get('/', proteger, async (req, res) => {
       filtro.formato = formato;
     }
 
-    if (tipo && [TIPOS.COMPRA, TIPOS.CONSIGNACION].includes(String(tipo).toUpperCase())) {
+    if (
+      tipo &&
+      [TIPOS.COMPRA, TIPOS.CONSIGNACION].includes(String(tipo).toUpperCase())
+    ) {
       filtro.tipo = String(tipo).toUpperCase();
     }
 
@@ -405,7 +409,7 @@ router.get('/', proteger, async (req, res) => {
   }
 });
 
-router.post('/', proteger, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const payload = await construirPayloadCotizacion(req.body);
     const cotizacion = await Cotizacion.create(payload);
@@ -413,8 +417,7 @@ router.post('/', proteger, async (req, res) => {
     sendEvent('ventas', { accion: 'cotizacion_creada', cotizacion });
     res.status(201).json(cotizacion);
   } catch (error) {
-    const status = error.code === 11000 ? 400 : 400;
-    res.status(status).json({
+    res.status(400).json({
       mensaje: 'Error al crear cotización',
       error:
         error.code === 11000
@@ -424,7 +427,7 @@ router.post('/', proteger, async (req, res) => {
   }
 });
 
-router.put('/:id', proteger, async (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
     const cotizacionActual = await Cotizacion.findById(req.params.id);
 
@@ -453,8 +456,7 @@ router.put('/:id', proteger, async (req, res) => {
 
     res.json(cotizacionActual);
   } catch (error) {
-    const status = error.code === 11000 ? 400 : 400;
-    res.status(status).json({
+    res.status(400).json({
       mensaje: 'Error al actualizar cotización',
       error:
         error.code === 11000
@@ -464,7 +466,7 @@ router.put('/:id', proteger, async (req, res) => {
   }
 });
 
-router.delete('/:id', proteger, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const cotizacion = await Cotizacion.findByIdAndDelete(req.params.id);
 
