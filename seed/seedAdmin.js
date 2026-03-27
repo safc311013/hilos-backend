@@ -6,7 +6,7 @@ const seedAdmin = async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI);
 
-    const existe = await Usuario.findOne({ email: 'admin@hilos.local' });
+    const existe = await Usuario.findOne({ email: 'sergio@hilos.com' });
 
     if (existe) {
       console.log('El usuario admin ya existe');
