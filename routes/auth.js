@@ -6,6 +6,10 @@ const { proteger } = require('../middleware/authMiddleware');
 const router = express.Router();
 
 const generarToken = (id) => {
+  if (!process.env.JWT_SECRET) {
+    throw new Error('JWT_SECRET no está configurado en el entorno');
+  }
+
   return jwt.sign(
     { id },
     process.env.JWT_SECRET,
@@ -41,7 +45,13 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    const usuario = await Usuario.findOne({ email });
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        mensaje: 'Falta configurar JWT_SECRET en el backend',
+      });
+    }
+
+    const usuario = await Usuario.findOne({ email }).select('+password');
 
     if (!usuario) {
       return res.status(401).json({
@@ -52,6 +62,13 @@ router.post('/login', async (req, res) => {
     if (!usuario.activo) {
       return res.status(403).json({
         mensaje: 'Usuario inactivo',
+      });
+    }
+
+    if (typeof usuario.compararPassword !== 'function') {
+      console.error('El modelo Usuario no tiene el método compararPassword');
+      return res.status(500).json({
+        mensaje: 'Error interno de autenticación: compararPassword no existe',
       });
     }
 
@@ -71,6 +88,8 @@ router.post('/login', async (req, res) => {
       usuario: serializarUsuario(usuario),
     });
   } catch (error) {
+    console.error('Error en /api/auth/login:', error);
+
     res.status(500).json({
       mensaje: 'Error al iniciar sesión',
       error: error.message,
@@ -80,7 +99,6 @@ router.post('/login', async (req, res) => {
 
 /**
  * Devuelve el usuario autenticado a partir del token.
- * Muy útil para Android al abrir la app y restaurar sesión.
  */
 router.get('/me', proteger, async (req, res) => {
   try {
@@ -94,6 +112,8 @@ router.get('/me', proteger, async (req, res) => {
       usuario: serializarUsuario(req.usuario),
     });
   } catch (error) {
+    console.error('Error en /api/auth/me:', error);
+
     res.status(500).json({
       mensaje: 'Error al obtener usuario actual',
       error: error.message,
