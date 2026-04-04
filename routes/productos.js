@@ -42,6 +42,32 @@ const construirRegexPrefijo = (texto = '', { uppercase = false } = {}) => {
   return new RegExp(`^${escaparRegex(base)}`, uppercase ? undefined : 'i');
 };
 
+const aNumero = (valor) => {
+  const numero = Number(valor);
+  return Number.isFinite(numero) ? numero : NaN;
+};
+
+const resolverPrecio = (body = {}) => {
+  return aNumero(body.precioVenta ?? body.precio);
+};
+
+const serializarProducto = (producto) => {
+  if (!producto) return producto;
+
+  const obj = typeof producto.toObject === 'function'
+    ? producto.toObject()
+    : { ...producto };
+
+  return {
+    ...obj,
+    precioVenta: obj.precio,
+  };
+};
+
+const serializarListaProductos = (productos = []) => {
+  return productos.map(serializarProducto);
+};
+
 const construirFiltroBusqueda = ({
   q = '',
   activo,
@@ -64,7 +90,7 @@ const construirFiltroBusqueda = ({
   }
 
   if (categoria) {
-    filtro.categoria = categoria;
+    filtro.categoria = new RegExp(`^${escaparRegex(String(categoria).trim())}$`, 'i');
   }
 
   const texto = String(q || '').trim();
@@ -100,8 +126,24 @@ const obtenerOrdenInventario = (sortKey, direction) => {
 
 router.get('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
   try {
-    const productos = await Producto.find().sort({ createdAt: -1 });
-    res.json(productos);
+    const q = String(req.query.q || '').trim();
+    const categoria = String(req.query.categoria || '').trim();
+    const stockBajo = String(req.query.stockBajo || '').toLowerCase() === 'true';
+    const activoParam = req.query.activo;
+
+    let activo;
+    if (activoParam === 'true') activo = true;
+    if (activoParam === 'false') activo = false;
+
+    const filtro = construirFiltroBusqueda({
+      q,
+      categoria,
+      stockBajo,
+      activo,
+    });
+
+    const productos = await Producto.find(filtro).sort({ createdAt: -1 });
+    res.json(serializarListaProductos(productos));
   } catch (error) {
     res.status(500).json({ mensaje: 'Error al obtener productos', error: error.message });
   }
@@ -149,7 +191,7 @@ router.get('/catalogo', proteger, permitirAdminSupervisorOCajero, async (req, re
       .lean();
 
     res.json({
-      items,
+      items: serializarListaProductos(items),
       page: currentPage,
       limit,
       total,
@@ -190,7 +232,7 @@ router.get('/inventario', proteger, permitirAdminOSupervisor, async (req, res) =
       .lean();
 
     res.json({
-      items,
+      items: serializarListaProductos(items),
       page: currentPage,
       limit,
       total,
@@ -208,6 +250,10 @@ router.get('/inventario', proteger, permitirAdminOSupervisor, async (req, res) =
   }
 });
 
+/**
+ * Para inventario interno conviene poder escanear incluso productos con stock 0.
+ * Se mantiene activo: true, pero ya no se exige stock > 0.
+ */
 router.get('/codigo/:codigo', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
   try {
     const codigo = String(req.params.codigo || '').trim().toUpperCase();
@@ -215,14 +261,13 @@ router.get('/codigo/:codigo', proteger, permitirAdminSupervisorOCajero, async (r
     const producto = await Producto.findOne({
       codigo,
       activo: true,
-      stock: { $gt: 0 },
     }).lean();
 
     if (!producto) {
       return res.status(404).json({ mensaje: 'Producto no encontrado' });
     }
 
-    res.json(producto);
+    res.json(serializarProducto(producto));
   } catch (error) {
     res.status(500).json({
       mensaje: 'Error al buscar producto por código',
@@ -238,7 +283,7 @@ router.get('/stock-bajo', proteger, permitirAdminOSupervisor, async (req, res) =
       activo: true,
     }).sort({ stock: 1 });
 
-    res.json(productos);
+    res.json(serializarListaProductos(productos));
   } catch (error) {
     res.status(500).json({ mensaje: 'Error al obtener stock bajo', error: error.message });
   }
@@ -247,6 +292,35 @@ router.get('/stock-bajo', proteger, permitirAdminOSupervisor, async (req, res) =
 router.post('/', proteger, permitirAdminOSupervisor, async (req, res) => {
   try {
     const codigoNormalizado = String(req.body.codigo || '').trim().toUpperCase();
+    const nombre = String(req.body.nombre || '').trim();
+    const categoria = String(req.body.categoria || '').trim() || 'General';
+    const costoArtesano = aNumero(req.body.costoArtesano);
+    const precio = resolverPrecio(req.body);
+    const stock = aNumero(req.body.stock);
+
+    if (!codigoNormalizado || !nombre) {
+      return res.status(400).json({
+        mensaje: 'Código y nombre son obligatorios',
+      });
+    }
+
+    if (!Number.isFinite(costoArtesano) || costoArtesano < 0) {
+      return res.status(400).json({
+        mensaje: 'Costo artesano inválido',
+      });
+    }
+
+    if (!Number.isFinite(precio) || precio < 0) {
+      return res.status(400).json({
+        mensaje: 'Precio de venta inválido',
+      });
+    }
+
+    if (!Number.isFinite(stock) || stock < 0) {
+      return res.status(400).json({
+        mensaje: 'Stock inválido',
+      });
+    }
 
     const existe = await Producto.findOne({ codigo: codigoNormalizado });
     if (existe) {
@@ -255,11 +329,11 @@ router.post('/', proteger, permitirAdminOSupervisor, async (req, res) => {
 
     const payload = {
       codigo: codigoNormalizado,
-      nombre: String(req.body.nombre || '').trim(),
-      categoria: String(req.body.categoria || '').trim() || 'General',
-      costoArtesano: Number(req.body.costoArtesano),
-      precio: Number(req.body.precio),
-      stock: Number(req.body.stock),
+      nombre,
+      categoria,
+      costoArtesano,
+      precio,
+      stock,
       stockMinimo: 3,
       activo: req.body.activo ?? true,
       imagenUrl: String(req.body.imagenUrl || '').trim(),
@@ -267,8 +341,8 @@ router.post('/', proteger, permitirAdminOSupervisor, async (req, res) => {
     };
 
     const producto = await Producto.create(payload);
-    sendEvent('productos', { accion: 'crear', producto });
-    res.status(201).json(producto);
+    sendEvent('productos', { accion: 'crear', producto: serializarProducto(producto) });
+    res.status(201).json(serializarProducto(producto));
   } catch (error) {
     res.status(400).json({ mensaje: 'Error al crear producto', error: error.message });
   }
@@ -277,6 +351,35 @@ router.post('/', proteger, permitirAdminOSupervisor, async (req, res) => {
 router.put('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
   try {
     const codigoNormalizado = String(req.body.codigo || '').trim().toUpperCase();
+    const nombre = String(req.body.nombre || '').trim();
+    const categoria = String(req.body.categoria || '').trim() || 'General';
+    const costoArtesano = aNumero(req.body.costoArtesano);
+    const precio = resolverPrecio(req.body);
+    const stock = aNumero(req.body.stock);
+
+    if (!codigoNormalizado || !nombre) {
+      return res.status(400).json({
+        mensaje: 'Código y nombre son obligatorios',
+      });
+    }
+
+    if (!Number.isFinite(costoArtesano) || costoArtesano < 0) {
+      return res.status(400).json({
+        mensaje: 'Costo artesano inválido',
+      });
+    }
+
+    if (!Number.isFinite(precio) || precio < 0) {
+      return res.status(400).json({
+        mensaje: 'Precio de venta inválido',
+      });
+    }
+
+    if (!Number.isFinite(stock) || stock < 0) {
+      return res.status(400).json({
+        mensaje: 'Stock inválido',
+      });
+    }
 
     const existe = await Producto.findOne({
       codigo: codigoNormalizado,
@@ -298,11 +401,11 @@ router.put('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
 
     const payload = {
       codigo: codigoNormalizado,
-      nombre: String(req.body.nombre || '').trim(),
-      categoria: String(req.body.categoria || '').trim() || 'General',
-      costoArtesano: Number(req.body.costoArtesano),
-      precio: Number(req.body.precio),
-      stock: Number(req.body.stock),
+      nombre,
+      categoria,
+      costoArtesano,
+      precio,
+      stock,
       stockMinimo: 3,
       activo: req.body.activo ?? true,
       imagenUrl: nuevaImagenUrl,
@@ -324,12 +427,15 @@ router.put('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
       try {
         await cloudinary.uploader.destroy(imagenAnterior);
       } catch (errorCloudinary) {
-        console.error('No se pudo eliminar la imagen anterior de Cloudinary:', errorCloudinary.message);
+        console.error(
+          'No se pudo eliminar la imagen anterior de Cloudinary:',
+          errorCloudinary.message
+        );
       }
     }
 
-    sendEvent('productos', { accion: 'actualizar', producto });
-    res.json(producto);
+    sendEvent('productos', { accion: 'actualizar', producto: serializarProducto(producto) });
+    res.json(serializarProducto(producto));
   } catch (error) {
     res.status(400).json({ mensaje: 'Error al actualizar producto', error: error.message });
   }
@@ -347,7 +453,10 @@ router.delete('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
       try {
         await cloudinary.uploader.destroy(producto.imagenPublicId);
       } catch (errorCloudinary) {
-        console.error('No se pudo eliminar la imagen de Cloudinary:', errorCloudinary.message);
+        console.error(
+          'No se pudo eliminar la imagen de Cloudinary:',
+          errorCloudinary.message
+        );
       }
     }
 
