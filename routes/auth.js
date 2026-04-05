@@ -5,6 +5,8 @@ const { proteger } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
+const ROLES_APP_ANDROID = ['admin', 'supervisor'];
+
 const generarToken = (id) => {
   if (!process.env.JWT_SECRET) {
     throw new Error('JWT_SECRET no está configurado en el entorno');
@@ -27,14 +29,11 @@ const serializarUsuario = (usuario) => ({
   updatedAt: usuario.updatedAt,
 });
 
-router.get('/test', (req, res) => {
-  res.json({
-    ok: true,
-    mensaje: 'Ruta de auth funcionando correctamente',
-  });
-});
+const puedeEntrarAppAndroid = (usuario) => {
+  return ROLES_APP_ANDROID.includes(usuario.rol);
+};
 
-router.post('/login', async (req, res) => {
+const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
@@ -68,7 +67,7 @@ router.post('/login', async (req, res) => {
     if (typeof usuario.compararPassword !== 'function') {
       console.error('El modelo Usuario no tiene el método compararPassword');
       return res.status(500).json({
-        mensaje: 'Error interno de autenticación: compararPassword no existe',
+        mensaje: 'Error interno de autenticación',
       });
     }
 
@@ -80,21 +79,49 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    if (restringirParaAndroid && !puedeEntrarAppAndroid(usuario)) {
+      return res.status(403).json({
+        mensaje: 'Solo administradores y supervisores pueden iniciar sesión en la app Android',
+      });
+    }
+
     const token = generarToken(usuario._id);
 
-    res.json({
+    return res.json({
       mensaje: 'Login exitoso',
       token,
       usuario: serializarUsuario(usuario),
     });
   } catch (error) {
-    console.error('Error en /api/auth/login:', error);
-
-    res.status(500).json({
+    console.error('Error en login:', error);
+    return res.status(500).json({
       mensaje: 'Error al iniciar sesión',
       error: error.message,
     });
   }
+};
+
+router.get('/test', (req, res) => {
+  res.json({
+    ok: true,
+    mensaje: 'Ruta de auth funcionando correctamente',
+  });
+});
+
+/**
+ * LOGIN WEB
+ * Se queda como siempre.
+ */
+router.post('/login', async (req, res) => {
+  return procesarLogin(req, res, { restringirParaAndroid: false });
+});
+
+/**
+ * LOGIN APP ANDROID
+ * Solo permite admin y supervisor.
+ */
+router.post('/login-app', async (req, res) => {
+  return procesarLogin(req, res, { restringirParaAndroid: true });
 });
 
 /**
@@ -108,13 +135,12 @@ router.get('/me', proteger, async (req, res) => {
       });
     }
 
-    res.json({
+    return res.json({
       usuario: serializarUsuario(req.usuario),
     });
   } catch (error) {
     console.error('Error en /api/auth/me:', error);
-
-    res.status(500).json({
+    return res.status(500).json({
       mensaje: 'Error al obtener usuario actual',
       error: error.message,
     });
