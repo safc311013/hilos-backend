@@ -1,5 +1,6 @@
 const express = require('express');
 const Producto = require('../models/Producto');
+const HistorialProducto = require('../models/HistorialProducto');
 const { proteger } = require('../middleware/authMiddleware');
 const { sendEvent } = require('../utils/sseManager');
 const cloudinary = require('../config/cloudinary');
@@ -122,6 +123,69 @@ const obtenerOrdenInventario = (sortKey, direction) => {
   const dir = direction === 'desc' ? -1 : 1;
 
   return { [key]: dir, createdAt: -1 };
+};
+
+const crearActorDesdeRequest = (req) => ({
+  usuarioId: req.usuario?._id,
+  nombre: req.usuario?.nombre || 'Usuario desconocido',
+  email: req.usuario?.email || '',
+  rol: req.usuario?.rol || 'desconocido',
+});
+
+const valorLegible = (valor) => {
+  if (valor === undefined || valor === null) return '';
+  if (typeof valor === 'boolean') return valor ? 'Sí' : 'No';
+  return String(valor);
+};
+
+const construirCambiosProducto = (anterior, nuevo) => {
+  const cambios = [];
+
+  const comparaciones = [
+    ['codigo', anterior.codigo, nuevo.codigo],
+    ['nombre', anterior.nombre, nuevo.nombre],
+    ['categoria', anterior.categoria, nuevo.categoria],
+    ['costoArtesano', anterior.costoArtesano, nuevo.costoArtesano],
+    ['precioVenta', anterior.precio, nuevo.precio],
+    ['stock', anterior.stock, nuevo.stock],
+    ['activo', anterior.activo, nuevo.activo],
+  ];
+
+  comparaciones.forEach(([campo, antes, despues]) => {
+    if (valorLegible(antes) !== valorLegible(despues)) {
+      cambios.push({
+        campo,
+        antes: valorLegible(antes),
+        despues: valorLegible(despues),
+      });
+    }
+  });
+
+  return cambios;
+};
+
+const registrarHistorialProducto = async ({
+  productoId,
+  codigo,
+  nombreProducto,
+  tipo,
+  detalle,
+  cambios = [],
+  req,
+}) => {
+  try {
+    await HistorialProducto.create({
+      productoId,
+      codigo: String(codigo || '').trim().toUpperCase(),
+      nombreProducto: String(nombreProducto || '').trim(),
+      tipo,
+      detalle: String(detalle || '').trim(),
+      cambios,
+      actor: crearActorDesdeRequest(req),
+    });
+  } catch (error) {
+    console.error('No se pudo registrar el historial del producto:', error.message);
+  }
 };
 
 router.get('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
@@ -250,6 +314,25 @@ router.get('/inventario', proteger, permitirAdminOSupervisor, async (req, res) =
   }
 });
 
+router.get('/codigo/:codigo/historial', proteger, permitirAdminOSupervisor, async (req, res) => {
+  try {
+    const codigo = String(req.params.codigo || '').trim().toUpperCase();
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
+
+    const items = await HistorialProducto.find({ codigo })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    res.json(items);
+  } catch (error) {
+    res.status(500).json({
+      mensaje: 'Error al obtener el historial del producto',
+      error: error.message,
+    });
+  }
+});
+
 /**
  * Para inventario interno conviene poder escanear incluso productos con stock 0.
  * Se mantiene activo: true, pero ya no se exige stock > 0.
@@ -341,6 +424,24 @@ router.post('/', proteger, permitirAdminOSupervisor, async (req, res) => {
     };
 
     const producto = await Producto.create(payload);
+
+    await registrarHistorialProducto({
+      productoId: producto._id,
+      codigo: producto.codigo,
+      nombreProducto: producto.nombre,
+      tipo: 'CREACION',
+      detalle: 'Producto creado',
+      cambios: [
+        { campo: 'codigo', antes: '', despues: producto.codigo },
+        { campo: 'nombre', antes: '', despues: producto.nombre },
+        { campo: 'categoria', antes: '', despues: producto.categoria },
+        { campo: 'costoArtesano', antes: '', despues: valorLegible(producto.costoArtesano) },
+        { campo: 'precioVenta', antes: '', despues: valorLegible(producto.precio) },
+        { campo: 'stock', antes: '', despues: valorLegible(producto.stock) },
+      ],
+      req,
+    });
+
     sendEvent('productos', { accion: 'crear', producto: serializarProducto(producto) });
     res.status(201).json(serializarProducto(producto));
   } catch (error) {
@@ -412,6 +513,8 @@ router.put('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
       imagenPublicId: nuevaImagenPublicId,
     };
 
+    const cambios = construirCambiosProducto(productoActual, payload);
+
     const producto = await Producto.findByIdAndUpdate(req.params.id, payload, {
       new: true,
       runValidators: true,
@@ -434,6 +537,18 @@ router.put('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
       }
     }
 
+    await registrarHistorialProducto({
+      productoId: producto._id,
+      codigo: producto.codigo,
+      nombreProducto: producto.nombre,
+      tipo: 'EDICION',
+      detalle: cambios.length > 0
+        ? `Producto actualizado (${cambios.length} cambio(s))`
+        : 'Producto actualizado sin cambios detectables',
+      cambios,
+      req,
+    });
+
     sendEvent('productos', { accion: 'actualizar', producto: serializarProducto(producto) });
     res.json(serializarProducto(producto));
   } catch (error) {
@@ -448,6 +563,23 @@ router.delete('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
     if (!producto) {
       return res.status(404).json({ mensaje: 'Producto no encontrado' });
     }
+
+    await registrarHistorialProducto({
+      productoId: producto._id,
+      codigo: producto.codigo,
+      nombreProducto: producto.nombre,
+      tipo: 'ELIMINACION',
+      detalle: 'Producto eliminado',
+      cambios: [
+        { campo: 'codigo', antes: producto.codigo, despues: '' },
+        { campo: 'nombre', antes: producto.nombre, despues: '' },
+        { campo: 'categoria', antes: producto.categoria, despues: '' },
+        { campo: 'costoArtesano', antes: valorLegible(producto.costoArtesano), despues: '' },
+        { campo: 'precioVenta', antes: valorLegible(producto.precio), despues: '' },
+        { campo: 'stock', antes: valorLegible(producto.stock), despues: '' },
+      ],
+      req,
+    });
 
     if (producto.imagenPublicId) {
       try {
