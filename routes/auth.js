@@ -25,6 +25,9 @@ const serializarUsuario = (usuario) => ({
   email: usuario.email,
   rol: usuario.rol,
   activo: usuario.activo,
+  debeCambiarPassword: Boolean(usuario.debeCambiarPassword),
+  passwordCambiadaAt: usuario.passwordCambiadaAt,
+  restablecidoAt: usuario.restablecidoAt,
   createdAt: usuario.createdAt,
   updatedAt: usuario.updatedAt,
 });
@@ -142,6 +145,68 @@ router.get('/me', proteger, async (req, res) => {
     console.error('Error en /api/auth/me:', error);
     return res.status(500).json({
       mensaje: 'Error al obtener usuario actual',
+      error: error.message,
+    });
+  }
+});
+
+router.post('/cambiar-password', proteger, async (req, res) => {
+  try {
+    const passwordActual = String(req.body.passwordActual || '');
+    const nuevaPassword = String(req.body.nuevaPassword || '');
+    const confirmarPassword = String(req.body.confirmarPassword || '');
+
+    if (!passwordActual || !nuevaPassword || !confirmarPassword) {
+      return res.status(400).json({
+        mensaje: 'Debes enviar la contraseÃ±a actual y la nueva contraseÃ±a',
+      });
+    }
+
+    if (nuevaPassword !== confirmarPassword) {
+      return res.status(400).json({
+        mensaje: 'La confirmaciÃ³n no coincide con la nueva contraseÃ±a',
+      });
+    }
+
+    if (nuevaPassword.length < 6) {
+      return res.status(400).json({
+        mensaje: 'La nueva contraseÃ±a debe tener al menos 6 caracteres',
+      });
+    }
+
+    if (passwordActual === nuevaPassword) {
+      return res.status(400).json({
+        mensaje: 'La nueva contraseÃ±a debe ser diferente a la temporal',
+      });
+    }
+
+    const usuario = await Usuario.findById(req.usuario._id).select('+password');
+
+    if (!usuario || !usuario.activo) {
+      return res.status(401).json({ mensaje: 'Usuario invÃ¡lido o inactivo' });
+    }
+
+    const passwordValido = await usuario.compararPassword(passwordActual);
+
+    if (!passwordValido) {
+      return res.status(401).json({
+        mensaje: 'La contraseÃ±a actual no es correcta',
+      });
+    }
+
+    usuario.password = nuevaPassword;
+    usuario.debeCambiarPassword = false;
+    usuario.passwordCambiadaAt = new Date();
+    await usuario.save();
+
+    return res.json({
+      mensaje: 'ContraseÃ±a actualizada correctamente',
+      usuario: serializarUsuario(usuario),
+    });
+  } catch (error) {
+    console.error('Error al cambiar contraseÃ±a:', error);
+    return res.status(500).json({
+      mensaje: 'Error al cambiar contraseÃ±a',
       error: error.message,
     });
   }

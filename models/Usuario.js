@@ -29,6 +29,18 @@ const usuarioSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    debeCambiarPassword: {
+      type: Boolean,
+      default: true,
+    },
+    passwordCambiadaAt: {
+      type: Date,
+      default: null,
+    },
+    restablecidoAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
