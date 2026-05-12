@@ -42,6 +42,27 @@ const generarFolio = () => {
 };
 
 const limpiarTexto = (valor) => String(valor || '').trim();
+const INVENTARIOS = ['taxco', 'tienda'];
+const normalizarInventario = (valor) => {
+  const inventario = String(valor || '').trim().toLowerCase();
+  return INVENTARIOS.includes(inventario) ? inventario : 'tienda';
+};
+
+const obtenerStockInventario = (producto, inventario) => {
+  if (inventario === 'taxco') {
+    return Number(producto.stockTaxco ?? 0);
+  }
+
+  const stockTienda = Number(producto.stockTienda ?? 0);
+  if (stockTienda > 0 || Number(producto.stockTaxco ?? 0) > 0) {
+    return stockTienda;
+  }
+
+  return Number(producto.stock ?? 0);
+};
+
+const obtenerCampoStockInventario = (inventario) =>
+  inventario === 'taxco' ? 'stockTaxco' : 'stockTienda';
 
 router.get('/', proteger, permitirAdminOSupervisor, async (req, res) => {
   try {
@@ -82,6 +103,25 @@ router.post('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
 
       const cantidad = Number(item.cantidad);
       const descuentoPorcentaje = Number(item.descuentoPorcentaje || 0);
+      const inventarioOrigen = normalizarInventario(
+        item.inventarioOrigen || item.inventario
+      );
+
+      if (
+        Number(producto.stock || 0) > 0 &&
+        Number(producto.stockTaxco || 0) === 0 &&
+        Number(producto.stockTienda || 0) === 0
+      ) {
+        if (inventarioOrigen === 'taxco') {
+          producto.stockTaxco = Number(producto.stock || 0);
+        } else {
+          producto.stockTienda = Number(producto.stock || 0);
+        }
+        producto.inventario = inventarioOrigen;
+        await producto.save();
+      }
+
+      const stockDisponible = obtenerStockInventario(producto, inventarioOrigen);
 
       if (!cantidad || cantidad < 1) {
         return res.status(400).json({
@@ -95,9 +135,11 @@ router.post('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
         });
       }
 
-      if (producto.stock < cantidad) {
+      if (stockDisponible < cantidad) {
         return res.status(400).json({
-          mensaje: `Stock insuficiente para ${producto.nombre}. Disponible: ${producto.stock}`,
+          mensaje: `Stock insuficiente en inventario de ${
+            inventarioOrigen === 'taxco' ? 'Taxco' : 'Tienda'
+          } para ${producto.nombre}. Disponible: ${stockDisponible}`,
         });
       }
 
@@ -124,6 +166,7 @@ router.post('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
         codigoProducto,
         nombreProducto,
         categoriaProducto,
+        inventarioOrigen,
         pieza,
         cantidad,
         precioUnitario,
@@ -135,8 +178,15 @@ router.post('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
     }
 
     for (const item of productos) {
+      const inventarioOrigen = normalizarInventario(
+        item.inventarioOrigen || item.inventario
+      );
+      const campoStock = obtenerCampoStockInventario(inventarioOrigen);
       await Producto.findByIdAndUpdate(item.producto, {
-        $inc: { stock: -Number(item.cantidad) },
+        $inc: {
+          [campoStock]: -Number(item.cantidad),
+          stock: -Number(item.cantidad),
+        },
       });
     }
 

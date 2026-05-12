@@ -40,6 +40,11 @@ const escaparRegex = (texto = '') => {
 };
 
 const normalizarTexto = (valor = '') => String(valor || '').trim();
+const INVENTARIOS = ['taxco', 'tienda'];
+const normalizarInventario = (valor = '') => {
+  const inventario = String(valor || '').trim().toLowerCase();
+  return INVENTARIOS.includes(inventario) ? inventario : 'tienda';
+};
 
 const normalizarProductoId = (valor) => {
   if (!valor) return null;
@@ -222,6 +227,7 @@ const normalizarProductos = (entrada, formato) => {
       nombreProducto,
       codigo: normalizarTexto(item.codigo),
       categoria: normalizarTexto(item.categoria),
+      inventarioOrigen: normalizarInventario(item.inventarioOrigen || item.inventario),
       imagenUrl: normalizarTexto(item.imagenUrl),
       stock: Math.max(aNumero(item.stock), 0),
       cantidad,

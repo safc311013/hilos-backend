@@ -52,15 +52,69 @@ const resolverPrecio = (body = {}) => {
   return aNumero(body.precioVenta ?? body.precio);
 };
 
+const INVENTARIOS = ['taxco', 'tienda'];
+
+const normalizarInventario = (valor) => {
+  const inventario = String(valor || '').trim().toLowerCase();
+  return INVENTARIOS.includes(inventario) ? inventario : 'tienda';
+};
+
+const resolverStocksInventario = (body = {}) => {
+  const inventario = normalizarInventario(body.inventario || body.inventarioOrigen);
+  const stockTotal = aNumero(body.stock);
+  const stockTaxco = aNumero(body.stockTaxco);
+  const stockTienda = aNumero(body.stockTienda);
+
+  if (Number.isFinite(stockTaxco) || Number.isFinite(stockTienda)) {
+    return {
+      inventario,
+      stockTaxco: Math.max(Number.isFinite(stockTaxco) ? stockTaxco : 0, 0),
+      stockTienda: Math.max(Number.isFinite(stockTienda) ? stockTienda : 0, 0),
+    };
+  }
+
+  const stock = Number.isFinite(stockTotal) ? Math.max(stockTotal, 0) : NaN;
+
+  return {
+    inventario,
+    stockTaxco: inventario === 'taxco' ? stock : 0,
+    stockTienda: inventario === 'tienda' ? stock : 0,
+  };
+};
+
+const normalizarStockProducto = (obj = {}) => {
+  const stockTaxcoRaw = Number(obj.stockTaxco);
+  const stockTiendaRaw = Number(obj.stockTienda);
+  let stockTaxco = Number.isFinite(stockTaxcoRaw) ? Math.max(stockTaxcoRaw, 0) : 0;
+  let stockTienda = Number.isFinite(stockTiendaRaw) ? Math.max(stockTiendaRaw, 0) : 0;
+
+  if (stockTaxco === 0 && stockTienda === 0 && Number(obj.stock || 0) > 0) {
+    if (normalizarInventario(obj.inventario) === 'taxco') {
+      stockTaxco = Number(obj.stock || 0);
+    } else {
+      stockTienda = Number(obj.stock || 0);
+    }
+  }
+
+  return {
+    stockTaxco,
+    stockTienda,
+    stock: stockTaxco + stockTienda,
+  };
+};
+
 const serializarProducto = (producto) => {
   if (!producto) return producto;
 
   const obj = typeof producto.toObject === 'function'
     ? producto.toObject()
     : { ...producto };
+  const stocks = normalizarStockProducto(obj);
 
   return {
     ...obj,
+    ...stocks,
+    inventario: normalizarInventario(obj.inventario),
     precioVenta: obj.precio,
   };
 };
@@ -75,6 +129,7 @@ const construirFiltroBusqueda = ({
   stockMayorQueCero = false,
   stockBajo = false,
   categoria = '',
+  inventario = '',
 }) => {
   const filtro = {};
 
@@ -92,6 +147,14 @@ const construirFiltroBusqueda = ({
 
   if (categoria) {
     filtro.categoria = new RegExp(`^${escaparRegex(String(categoria).trim())}$`, 'i');
+  }
+
+  const inventarioNormalizado = String(inventario || '').trim().toLowerCase();
+  if (inventarioNormalizado === 'taxco') {
+    filtro.stockTaxco = { $gt: 0 };
+  }
+  if (inventarioNormalizado === 'tienda') {
+    filtro.stockTienda = { $gt: 0 };
   }
 
   const texto = String(q || '').trim();
@@ -118,7 +181,16 @@ const obtenerPaginacion = (req, defaultLimit = 12) => {
 };
 
 const obtenerOrdenInventario = (sortKey, direction) => {
-  const camposPermitidos = ['codigo', 'categoria', 'nombre', 'costoArtesano', 'precio', 'stock'];
+  const camposPermitidos = [
+    'codigo',
+    'categoria',
+    'nombre',
+    'costoArtesano',
+    'precio',
+    'stock',
+    'stockTaxco',
+    'stockTienda',
+  ];
   const key = camposPermitidos.includes(sortKey) ? sortKey : 'codigo';
   const dir = direction === 'desc' ? -1 : 1;
 
@@ -147,7 +219,10 @@ const construirCambiosProducto = (anterior, nuevo) => {
     ['categoria', anterior.categoria, nuevo.categoria],
     ['costoArtesano', anterior.costoArtesano, nuevo.costoArtesano],
     ['precioVenta', anterior.precio, nuevo.precio],
+    ['stockTaxco', anterior.stockTaxco, nuevo.stockTaxco],
+    ['stockTienda', anterior.stockTienda, nuevo.stockTienda],
     ['stock', anterior.stock, nuevo.stock],
+    ['inventario', anterior.inventario, nuevo.inventario],
     ['activo', anterior.activo, nuevo.activo],
   ];
 
@@ -192,6 +267,7 @@ router.get('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
   try {
     const q = String(req.query.q || '').trim();
     const categoria = String(req.query.categoria || '').trim();
+    const inventario = String(req.query.inventario || '').trim();
     const stockBajo = String(req.query.stockBajo || '').toLowerCase() === 'true';
     const activoParam = req.query.activo;
 
@@ -202,6 +278,7 @@ router.get('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
     const filtro = construirFiltroBusqueda({
       q,
       categoria,
+      inventario,
       stockBajo,
       activo,
     });
@@ -236,9 +313,11 @@ router.get('/catalogo', proteger, permitirAdminSupervisorOCajero, async (req, re
   try {
     const { page, limit } = obtenerPaginacion(req, 12);
     const q = String(req.query.q || '').trim();
+    const inventario = String(req.query.inventario || '').trim();
 
     const filtro = construirFiltroBusqueda({
       q,
+      inventario,
       activo: true,
       stockMayorQueCero: true,
     });
@@ -274,6 +353,7 @@ router.get('/inventario', proteger, permitirAdminOSupervisor, async (req, res) =
     const { page, limit } = obtenerPaginacion(req, 20);
     const q = String(req.query.q || '').trim();
     const categoria = String(req.query.categoria || '').trim();
+    const inventario = String(req.query.inventario || '').trim();
     const stockBajo = String(req.query.stockBajo || '').toLowerCase() === 'true';
     const sortKey = String(req.query.sortKey || 'codigo').trim();
     const direction = String(req.query.direction || 'asc').trim().toLowerCase();
@@ -281,6 +361,7 @@ router.get('/inventario', proteger, permitirAdminOSupervisor, async (req, res) =
     const filtro = construirFiltroBusqueda({
       q,
       categoria,
+      inventario,
       stockBajo,
     });
 
@@ -301,7 +382,16 @@ router.get('/inventario', proteger, permitirAdminOSupervisor, async (req, res) =
       limit,
       total,
       totalPages,
-      sortKey: ['codigo', 'categoria', 'nombre', 'costoArtesano', 'precio', 'stock'].includes(sortKey)
+      sortKey: [
+        'codigo',
+        'categoria',
+        'nombre',
+        'costoArtesano',
+        'precio',
+        'stock',
+        'stockTaxco',
+        'stockTienda',
+      ].includes(sortKey)
         ? sortKey
         : 'codigo',
       direction: direction === 'desc' ? 'desc' : 'asc',
@@ -379,7 +469,8 @@ router.post('/', proteger, permitirAdminOSupervisor, async (req, res) => {
     const categoria = String(req.body.categoria || '').trim() || 'General';
     const costoArtesano = aNumero(req.body.costoArtesano);
     const precio = resolverPrecio(req.body);
-    const stock = aNumero(req.body.stock);
+    const stocksInventario = resolverStocksInventario(req.body);
+    const stock = stocksInventario.stockTaxco + stocksInventario.stockTienda;
 
     if (!codigoNormalizado || !nombre) {
       return res.status(400).json({
@@ -416,9 +507,12 @@ router.post('/', proteger, permitirAdminOSupervisor, async (req, res) => {
       categoria,
       costoArtesano,
       precio,
+      stockTaxco: stocksInventario.stockTaxco,
+      stockTienda: stocksInventario.stockTienda,
       stock,
       stockMinimo: 3,
       activo: req.body.activo ?? true,
+      inventario: stocksInventario.inventario,
       imagenUrl: String(req.body.imagenUrl || '').trim(),
       imagenPublicId: String(req.body.imagenPublicId || '').trim(),
     };
@@ -437,6 +531,9 @@ router.post('/', proteger, permitirAdminOSupervisor, async (req, res) => {
         { campo: 'categoria', antes: '', despues: producto.categoria },
         { campo: 'costoArtesano', antes: '', despues: valorLegible(producto.costoArtesano) },
         { campo: 'precioVenta', antes: '', despues: valorLegible(producto.precio) },
+        { campo: 'inventario', antes: '', despues: valorLegible(producto.inventario) },
+        { campo: 'stockTaxco', antes: '', despues: valorLegible(producto.stockTaxco) },
+        { campo: 'stockTienda', antes: '', despues: valorLegible(producto.stockTienda) },
         { campo: 'stock', antes: '', despues: valorLegible(producto.stock) },
       ],
       req,
@@ -456,7 +553,8 @@ router.put('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
     const categoria = String(req.body.categoria || '').trim() || 'General';
     const costoArtesano = aNumero(req.body.costoArtesano);
     const precio = resolverPrecio(req.body);
-    const stock = aNumero(req.body.stock);
+    const stocksInventario = resolverStocksInventario(req.body);
+    const stock = stocksInventario.stockTaxco + stocksInventario.stockTienda;
 
     if (!codigoNormalizado || !nombre) {
       return res.status(400).json({
@@ -506,9 +604,12 @@ router.put('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
       categoria,
       costoArtesano,
       precio,
+      stockTaxco: stocksInventario.stockTaxco,
+      stockTienda: stocksInventario.stockTienda,
       stock,
       stockMinimo: 3,
       activo: req.body.activo ?? true,
+      inventario: stocksInventario.inventario,
       imagenUrl: nuevaImagenUrl,
       imagenPublicId: nuevaImagenPublicId,
     };
@@ -576,6 +677,9 @@ router.delete('/:id', proteger, permitirAdminOSupervisor, async (req, res) => {
         { campo: 'categoria', antes: producto.categoria, despues: '' },
         { campo: 'costoArtesano', antes: valorLegible(producto.costoArtesano), despues: '' },
         { campo: 'precioVenta', antes: valorLegible(producto.precio), despues: '' },
+        { campo: 'inventario', antes: valorLegible(producto.inventario), despues: '' },
+        { campo: 'stockTaxco', antes: valorLegible(producto.stockTaxco), despues: '' },
+        { campo: 'stockTienda', antes: valorLegible(producto.stockTienda), despues: '' },
         { campo: 'stock', antes: valorLegible(producto.stock), despues: '' },
       ],
       req,

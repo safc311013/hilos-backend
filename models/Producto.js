@@ -29,6 +29,16 @@ const productoSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+    stockTaxco: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+    stockTienda: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
     stock: {
       type: Number,
       required: true,
@@ -45,6 +55,13 @@ const productoSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    inventario: {
+      type: String,
+      enum: ['taxco', 'tienda'],
+      default: 'tienda',
+      trim: true,
+      lowercase: true,
+    },
     imagenUrl: {
       type: String,
       default: '',
@@ -60,10 +77,33 @@ const productoSchema = new mongoose.Schema(
 );
 
 // Índices útiles para filtros y orden en catálogo / inventario
+productoSchema.pre('validate', function sincronizarStockInventarios(next) {
+  const stockLegacy = Number(this.stock || 0);
+  const taxcoDefinido = this.stockTaxco !== undefined && this.stockTaxco !== null;
+  const tiendaDefinido = this.stockTienda !== undefined && this.stockTienda !== null;
+
+  if (!taxcoDefinido && !tiendaDefinido && stockLegacy > 0) {
+    if (this.inventario === 'taxco') {
+      this.stockTaxco = stockLegacy;
+      this.stockTienda = 0;
+    } else {
+      this.stockTaxco = 0;
+      this.stockTienda = stockLegacy;
+    }
+  }
+
+  this.stockTaxco = Math.max(Number(this.stockTaxco || 0), 0);
+  this.stockTienda = Math.max(Number(this.stockTienda || 0), 0);
+  this.stock = this.stockTaxco + this.stockTienda;
+
+  next();
+});
+
 productoSchema.index({ activo: 1, stock: 1, nombre: 1 });
 productoSchema.index({ categoria: 1, nombre: 1 });
 productoSchema.index({ categoria: 1, codigo: 1 });
 productoSchema.index({ stock: 1, codigo: 1 });
+productoSchema.index({ inventario: 1, stock: 1 });
 productoSchema.index({ nombre: 1 });
 productoSchema.index({ categoria: 1 });
 

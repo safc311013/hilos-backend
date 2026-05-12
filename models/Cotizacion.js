@@ -22,6 +22,13 @@ const detalleCotizacionSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    inventarioOrigen: {
+      type: String,
+      enum: ['taxco', 'tienda'],
+      default: 'tienda',
+      trim: true,
+      lowercase: true,
+    },
     imagenUrl: {
       type: String,
       default: '',

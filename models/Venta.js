@@ -22,6 +22,13 @@ const detalleVentaSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    inventarioOrigen: {
+      type: String,
+      enum: ['taxco', 'tienda'],
+      default: 'tienda',
+      trim: true,
+      lowercase: true,
+    },
     pieza: {
       type: String,
       default: '',
