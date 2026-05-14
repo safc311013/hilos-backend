@@ -26,14 +26,14 @@ router.post('/', proteger, soloAdmin, async (req, res) => {
 
     const existe = await Usuario.findOne({ email: emailNormalizado });
     if (existe) {
-      return res.status(400).json({ mensaje: 'Ya existe un usuario con ese email' });
+      return res.status(400).json({ mensaje: 'Ya existe un usuario con ese correo' });
     }
 
     const passwordTemporal = String(req.body.password || '').trim();
 
     if (passwordTemporal.length < 6) {
       return res.status(400).json({
-        mensaje: 'La contraseÃ±a temporal debe tener al menos 6 caracteres',
+        mensaje: 'La contraseña temporal debe tener al menos 6 caracteres',
       });
     }
 
@@ -63,7 +63,7 @@ router.post('/:id/restablecer', proteger, soloAdmin, async (req, res) => {
 
     if (passwordTemporal.length < 6) {
       return res.status(400).json({
-        mensaje: 'La contraseÃ±a temporal debe tener al menos 6 caracteres',
+        mensaje: 'La contraseña temporal debe tener al menos 6 caracteres',
       });
     }
 
@@ -106,7 +106,7 @@ router.put('/:id', proteger, soloAdmin, async (req, res) => {
       });
 
       if (existe) {
-        return res.status(400).json({ mensaje: 'Ya existe un usuario con ese email' });
+        return res.status(400).json({ mensaje: 'Ya existe un usuario con ese correo' });
       }
     }
 

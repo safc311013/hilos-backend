@@ -43,7 +43,7 @@ const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) =
 
     if (!email || !password) {
       return res.status(400).json({
-        mensaje: 'Email y password son obligatorios',
+        mensaje: 'El correo y la contraseña son obligatorios',
       });
     }
 
@@ -91,7 +91,7 @@ const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) =
     const token = generarToken(usuario._id);
 
     return res.json({
-      mensaje: 'Login exitoso',
+      mensaje: 'Inicio de sesión exitoso',
       token,
       usuario: serializarUsuario(usuario),
     });
@@ -158,39 +158,39 @@ router.post('/cambiar-password', proteger, async (req, res) => {
 
     if (!passwordActual || !nuevaPassword || !confirmarPassword) {
       return res.status(400).json({
-        mensaje: 'Debes enviar la contraseÃ±a actual y la nueva contraseÃ±a',
+        mensaje: 'Debes enviar la contraseña actual y la nueva contraseña',
       });
     }
 
     if (nuevaPassword !== confirmarPassword) {
       return res.status(400).json({
-        mensaje: 'La confirmaciÃ³n no coincide con la nueva contraseÃ±a',
+        mensaje: 'La confirmación no coincide con la nueva contraseña',
       });
     }
 
     if (nuevaPassword.length < 6) {
       return res.status(400).json({
-        mensaje: 'La nueva contraseÃ±a debe tener al menos 6 caracteres',
+        mensaje: 'La nueva contraseña debe tener al menos 6 caracteres',
       });
     }
 
     if (passwordActual === nuevaPassword) {
       return res.status(400).json({
-        mensaje: 'La nueva contraseÃ±a debe ser diferente a la temporal',
+        mensaje: 'La nueva contraseña debe ser diferente a la temporal',
       });
     }
 
     const usuario = await Usuario.findById(req.usuario._id).select('+password');
 
     if (!usuario || !usuario.activo) {
-      return res.status(401).json({ mensaje: 'Usuario invÃ¡lido o inactivo' });
+      return res.status(401).json({ mensaje: 'Usuario inválido o inactivo' });
     }
 
     const passwordValido = await usuario.compararPassword(passwordActual);
 
     if (!passwordValido) {
       return res.status(401).json({
-        mensaje: 'La contraseÃ±a actual no es correcta',
+        mensaje: 'La contraseña actual no es correcta',
       });
     }
 
@@ -200,13 +200,13 @@ router.post('/cambiar-password', proteger, async (req, res) => {
     await usuario.save();
 
     return res.json({
-      mensaje: 'ContraseÃ±a actualizada correctamente',
+      mensaje: 'Contraseña actualizada correctamente',
       usuario: serializarUsuario(usuario),
     });
   } catch (error) {
-    console.error('Error al cambiar contraseÃ±a:', error);
+    console.error('Error al cambiar contraseña:', error);
     return res.status(500).json({
-      mensaje: 'Error al cambiar contraseÃ±a',
+      mensaje: 'Error al cambiar contraseña',
       error: error.message,
     });
   }
