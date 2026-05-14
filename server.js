@@ -160,16 +160,13 @@ app.get('/api/realtime/events', async (req, res) => {
 const PORT = process.env.PORT || 5000;
 
 if (process.env.VERCEL !== '1') {
-  conectarMongo()
-    .then(() => {
-      app.listen(PORT, () => {
-        console.log(`Servidor backend corriendo en http://localhost:${PORT}`);
-      });
-    })
-    .catch((error) => {
-      console.error('No se pudo iniciar el servidor:', error.message);
-      process.exit(1);
-    });
+  app.listen(PORT, () => {
+    console.log(`Servidor backend corriendo en http://localhost:${PORT}`);
+  });
+
+  conectarMongo().catch((error) => {
+    console.error('No se pudo conectar MongoDB al iniciar:', error.message);
+  });
 }
 
 module.exports = app;
