@@ -1,4 +1,5 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -156,6 +157,18 @@ app.get('/api/realtime/events', async (req, res) => {
     res.status(401).json({ mensaje: 'Token inválido para SSE' });
   }
 });
+
+if (process.env.ELECTRON_FRONTEND_DIR) {
+  app.use(express.static(process.env.ELECTRON_FRONTEND_DIR));
+
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+
+    return res.sendFile(path.join(process.env.ELECTRON_FRONTEND_DIR, 'index.html'));
+  });
+}
 
 const PORT = process.env.PORT || 5000;
 
