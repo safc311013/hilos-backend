@@ -103,6 +103,10 @@ app.get('/api/health', (req, res) => {
 });
 
 app.use(async (req, res, next) => {
+  if (process.env.HILOS_DESKTOP === '1' && req.path.startsWith('/api/desktop')) {
+    return next();
+  }
+
   try {
     await conectarMongo();
     next();
