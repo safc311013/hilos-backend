@@ -19,6 +19,18 @@ const permitirAdminOSupervisor = (req, res, next) => {
   next();
 };
 
+const permitirSoloAdmin = (req, res, next) => {
+  if (!req.usuario) {
+    return res.status(401).json({ mensaje: 'No autorizado' });
+  }
+
+  if (req.usuario.rol !== 'admin') {
+    return res.status(403).json({ mensaje: 'Solo los administradores pueden actualizar costos' });
+  }
+
+  next();
+};
+
 const permitirAdminSupervisorOCajero = (req, res, next) => {
   if (!req.usuario) {
     return res.status(401).json({ mensaje: 'No autorizado' });
@@ -543,6 +555,106 @@ router.post('/', proteger, permitirAdminOSupervisor, async (req, res) => {
     res.status(201).json(serializarProducto(producto));
   } catch (error) {
     res.status(400).json({ mensaje: 'Error al crear producto', error: error.message });
+  }
+});
+
+router.post('/costos/importar', proteger, permitirSoloAdmin, async (req, res) => {
+  try {
+    const filas = Array.isArray(req.body?.costos) ? req.body.costos : [];
+
+    if (!filas.length || filas.length > 2000) {
+      return res.status(400).json({
+        mensaje: 'Envía entre 1 y 2000 costos para actualizar',
+      });
+    }
+
+    const codigosVistos = new Set();
+    const costos = [];
+
+    for (const fila of filas) {
+      const codigo = String(fila?.codigo || '').trim().toUpperCase();
+      const costoArtesano = aNumero(fila?.costoArtesano);
+
+      if (!codigo || !Number.isFinite(costoArtesano) || costoArtesano < 0) {
+        return res.status(400).json({
+          mensaje: `Código o costo inválido en la fila ${costos.length + 1}`,
+        });
+      }
+
+      if (codigosVistos.has(codigo)) {
+        return res.status(400).json({ mensaje: `El código ${codigo} está repetido` });
+      }
+
+      codigosVistos.add(codigo);
+      costos.push({ codigo, costoArtesano });
+    }
+
+    const productos = await Producto.find({
+      codigo: { $in: costos.map((item) => item.codigo) },
+    });
+    const productosPorCodigo = new Map(
+      productos.map((producto) => [producto.codigo, producto])
+    );
+    const codigosInexistentes = costos
+      .filter((item) => !productosPorCodigo.has(item.codigo))
+      .map((item) => item.codigo);
+
+    if (codigosInexistentes.length) {
+      return res.status(400).json({
+        mensaje: `No existen estos códigos: ${codigosInexistentes.slice(0, 10).join(', ')}`,
+      });
+    }
+
+    let actualizados = 0;
+    let sinCambios = 0;
+
+    for (const item of costos) {
+      const producto = productosPorCodigo.get(item.codigo);
+      const costoAnterior = Number(producto.costoArtesano || 0);
+
+      if (costoAnterior === item.costoArtesano) {
+        sinCambios += 1;
+        continue;
+      }
+
+      await Producto.updateOne(
+        { _id: producto._id },
+        { $set: { costoArtesano: item.costoArtesano } },
+        { runValidators: true }
+      );
+
+      await registrarHistorialProducto({
+        productoId: producto._id,
+        codigo: producto.codigo,
+        nombreProducto: producto.nombre,
+        tipo: 'EDICION',
+        detalle: 'Costo artesano actualizado por importación',
+        cambios: [
+          {
+            campo: 'costoArtesano',
+            antes: valorLegible(costoAnterior),
+            despues: valorLegible(item.costoArtesano),
+          },
+        ],
+        req,
+      });
+
+      actualizados += 1;
+    }
+
+    if (actualizados > 0) {
+      sendEvent('productos', {
+        accion: 'actualizar-costos',
+        codigos: costos.map((item) => item.codigo),
+      });
+    }
+
+    res.json({ actualizados, sinCambios, total: costos.length });
+  } catch (error) {
+    res.status(400).json({
+      mensaje: 'No se pudieron actualizar los costos',
+      error: error.message,
+    });
   }
 });
 
