@@ -16,6 +16,7 @@ const reportesRoutes = require('./routes/reportes');
 const cotizacionesRoutes = require('./routes/cotizaciones');
 const uploadRoutes = require('./routes/upload.routes');
 const impresoraRedRoutes = require('./routes/impresoraRed');
+const backupsRoutes = require('./routes/backups');
 
 const app = express();
 
@@ -131,6 +132,7 @@ app.use('/api/ventas', ventasRoutes);
 app.use('/api/reportes', reportesRoutes);
 app.use('/api/cotizaciones', cotizacionesRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/backups', backupsRoutes);
 
 app.get('/api/realtime/events', async (req, res) => {
   try {
