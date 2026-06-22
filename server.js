@@ -15,6 +15,7 @@ const ventasRoutes = require('./routes/ventas');
 const reportesRoutes = require('./routes/reportes');
 const cotizacionesRoutes = require('./routes/cotizaciones');
 const uploadRoutes = require('./routes/upload.routes');
+const impresoraRedRoutes = require('./routes/impresoraRed');
 
 const app = express();
 
@@ -101,6 +102,9 @@ app.get('/', (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, mensaje: 'Backend activo' });
 });
+
+// No requiere MongoDB: actua como puente local entre telefono/PC e impresora TCP.
+app.use('/api/impresora-red', impresoraRedRoutes);
 
 app.use(async (req, res, next) => {
   if (process.env.HILOS_DESKTOP === '1' && req.path.startsWith('/api/desktop')) {
