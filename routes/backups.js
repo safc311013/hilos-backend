@@ -1,11 +1,45 @@
 const express = require('express');
+const mongoose = require('mongoose');
+const multer = require('multer');
 const Producto = require('../models/Producto');
 const HistorialProducto = require('../models/HistorialProducto');
 const cloudinary = require('../config/cloudinary');
 const { proteger, soloAdmin } = require('../middleware/authMiddleware');
+const { sendEvent } = require('../utils/sseManager');
 
 const router = express.Router();
 const TIEMPO_LIMITE_FOTO_MS = 30000;
+const TAMANO_MAXIMO_RESPALDO = 250 * 1024 * 1024;
+const TIPOS_FOTO_PERMITIDOS = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+const uploadRespaldo = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: TAMANO_MAXIMO_RESPALDO, files: 1 },
+  fileFilter: (req, file, cb) => {
+    const nombreValido = String(file.originalname || '').toLowerCase().endsWith('.json');
+    const mimeValido = ['application/json', 'text/json', 'application/octet-stream'].includes(
+      file.mimetype
+    );
+
+    if (!nombreValido || !mimeValido) {
+      return cb(new Error('Selecciona un archivo de respaldo JSON válido'));
+    }
+
+    return cb(null, true);
+  },
+});
+
+const recibirArchivoRespaldo = (req, res, next) => {
+  uploadRespaldo.single('respaldo')(req, res, (error) => {
+    if (!error) return next();
+
+    const mensaje =
+      error.code === 'LIMIT_FILE_SIZE'
+        ? 'El respaldo supera el límite de 250 MB'
+        : error.message;
+    return res.status(400).json({ mensaje });
+  });
+};
 
 const obtenerUrlFoto = (producto) => {
   if (producto.imagenPublicId) {
@@ -67,6 +101,86 @@ const descargarFoto = async (producto) => {
   } finally {
     clearTimeout(timeout);
   }
+};
+
+const validarYPrepararRespaldo = (respaldo) => {
+  if (!respaldo || respaldo.formato !== 'hilos-inventario-backup' || respaldo.version !== 1) {
+    throw new Error('El archivo no es una copia de seguridad compatible');
+  }
+
+  if (!Array.isArray(respaldo.productos) || !Array.isArray(respaldo.historialProductos)) {
+    throw new Error('El respaldo no contiene la estructura completa del inventario');
+  }
+
+  const codigos = new Set();
+  const productos = respaldo.productos.map((registro, index) => {
+    if (!registro?.datos || typeof registro.datos !== 'object') {
+      throw new Error(`El producto ${index + 1} no contiene datos válidos`);
+    }
+
+    const datos = { ...registro.datos };
+    const codigo = String(datos.codigo || '').trim().toUpperCase();
+
+    if (!codigo || codigos.has(codigo)) {
+      throw new Error(`El código del producto ${index + 1} está vacío o duplicado`);
+    }
+
+    if (!mongoose.isValidObjectId(datos._id)) {
+      throw new Error(`El producto ${codigo} tiene un identificador inválido`);
+    }
+
+    codigos.add(codigo);
+    datos.codigo = codigo;
+
+    const foto = registro.foto;
+    if (!foto) {
+      if (datos.imagenUrl || datos.imagenPublicId) {
+        throw new Error(`El respaldo no contiene la foto registrada para ${codigo}`);
+      }
+      datos.imagenUrl = '';
+      datos.imagenPublicId = '';
+      return { datos, foto: null };
+    }
+
+    const tipoMime = String(foto.tipoMime || '').toLowerCase();
+    if (!TIPOS_FOTO_PERMITIDOS.has(tipoMime) || !foto.contenidoBase64) {
+      throw new Error(`La foto del producto ${codigo} no es válida`);
+    }
+
+    const contenido = Buffer.from(foto.contenidoBase64, 'base64');
+    if (!contenido.length || contenido.length !== Number(foto.tamanoBytes)) {
+      throw new Error(`La foto del producto ${codigo} está dañada o incompleta`);
+    }
+
+    return { datos, foto: { tipoMime, contenido } };
+  });
+
+  return {
+    productos,
+    historial: respaldo.historialProductos.map((registro) => ({ ...registro })),
+  };
+};
+
+const subirFotoRestaurada = (foto, carpeta) => {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: carpeta,
+        resource_type: 'image',
+        allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+      },
+      (error, resultado) => {
+        if (error) return reject(error);
+        return resolve(resultado);
+      }
+    );
+
+    stream.end(foto.contenido);
+  });
+};
+
+const eliminarFotosSubidas = async (publicIds) => {
+  await Promise.allSettled(publicIds.map((publicId) => cloudinary.uploader.destroy(publicId)));
 };
 
 router.get('/inventario/resumen', proteger, soloAdmin, async (req, res) => {
@@ -151,5 +265,88 @@ router.get('/inventario/descargar', proteger, soloAdmin, async (req, res) => {
     });
   }
 });
+
+router.post(
+  '/inventario/restaurar',
+  proteger,
+  soloAdmin,
+  recibirArchivoRespaldo,
+  async (req, res) => {
+    const fotosSubidas = [];
+    let session;
+
+    try {
+      if (!req.file) {
+        return res.status(400).json({ mensaje: 'No se recibió el archivo de respaldo' });
+      }
+
+      let respaldo;
+      try {
+        respaldo = JSON.parse(req.file.buffer.toString('utf8'));
+      } catch {
+        return res.status(400).json({ mensaje: 'El archivo JSON está dañado o no es válido' });
+      }
+
+      const preparado = validarYPrepararRespaldo(respaldo);
+      const carpeta = `productos/restaurados/${Date.now()}`;
+      const productosRestaurados = [];
+
+      // Las fotos se completan antes de modificar MongoDB.
+      for (const producto of preparado.productos) {
+        const datos = { ...producto.datos };
+
+        if (producto.foto) {
+          const resultado = await subirFotoRestaurada(producto.foto, carpeta);
+          fotosSubidas.push(resultado.public_id);
+          datos.imagenUrl = resultado.secure_url;
+          datos.imagenPublicId = resultado.public_id;
+        }
+
+        productosRestaurados.push(datos);
+      }
+
+      // Valida los esquemas antes de abrir la transacción destructiva.
+      for (const datos of productosRestaurados) {
+        await new Producto(datos).validate();
+      }
+      for (const datos of preparado.historial) {
+        await new HistorialProducto(datos).validate();
+      }
+
+      session = await mongoose.startSession();
+      await session.withTransaction(async () => {
+        await HistorialProducto.deleteMany({}, { session });
+        await Producto.deleteMany({}, { session });
+
+        if (productosRestaurados.length) {
+          await Producto.insertMany(productosRestaurados, { session });
+        }
+        if (preparado.historial.length) {
+          await HistorialProducto.insertMany(preparado.historial, { session });
+        }
+      });
+
+      sendEvent('productos', { accion: 'restauracion_completa' });
+
+      return res.json({
+        mensaje: 'Inventario restaurado correctamente',
+        resumen: {
+          productos: productosRestaurados.length,
+          fotosRestauradas: fotosSubidas.length,
+          registrosHistorial: preparado.historial.length,
+        },
+      });
+    } catch (error) {
+      await eliminarFotosSubidas(fotosSubidas);
+      console.error('Error al restaurar respaldo de inventario:', error);
+      return res.status(500).json({
+        mensaje: 'No se pudo restaurar la copia de seguridad',
+        error: error.message,
+      });
+    } finally {
+      if (session) await session.endSession();
+    }
+  }
+);
 
 module.exports = router;
