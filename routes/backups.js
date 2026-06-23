@@ -1,6 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const multer = require('multer');
+const os = require('os');
+const fs = require('fs/promises');
 const Producto = require('../models/Producto');
 const HistorialProducto = require('../models/HistorialProducto');
 const cloudinary = require('../config/cloudinary');
@@ -9,15 +11,15 @@ const { sendEvent } = require('../utils/sseManager');
 
 const router = express.Router();
 const TIEMPO_LIMITE_FOTO_MS = 30000;
-const TAMANO_MAXIMO_RESPALDO = 250 * 1024 * 1024;
+const TAMANO_MAXIMO_RESPALDO = 1024 * 1024 * 1024;
 const TIPOS_FOTO_PERMITIDOS = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 const uploadRespaldo = multer({
-  storage: multer.memoryStorage(),
+  dest: os.tmpdir(),
   limits: { fileSize: TAMANO_MAXIMO_RESPALDO, files: 1 },
   fileFilter: (req, file, cb) => {
     const nombreValido = String(file.originalname || '').toLowerCase().endsWith('.json');
-    const mimeValido = ['application/json', 'text/json', 'application/octet-stream'].includes(
+    const mimeValido = ['', 'application/json', 'text/json', 'application/octet-stream'].includes(
       file.mimetype
     );
 
@@ -35,7 +37,7 @@ const recibirArchivoRespaldo = (req, res, next) => {
 
     const mensaje =
       error.code === 'LIMIT_FILE_SIZE'
-        ? 'El respaldo supera el límite de 250 MB'
+        ? 'El respaldo supera el límite de 1 GB'
         : error.message;
     return res.status(400).json({ mensaje });
   });
@@ -147,12 +149,19 @@ const validarYPrepararRespaldo = (respaldo) => {
       throw new Error(`La foto del producto ${codigo} no es válida`);
     }
 
-    const contenido = Buffer.from(foto.contenidoBase64, 'base64');
-    if (!contenido.length || contenido.length !== Number(foto.tamanoBytes)) {
+    const tamanoBytes = Number(foto.tamanoBytes);
+    if (!Number.isSafeInteger(tamanoBytes) || tamanoBytes <= 0) {
       throw new Error(`La foto del producto ${codigo} está dañada o incompleta`);
     }
 
-    return { datos, foto: { tipoMime, contenido } };
+    return {
+      datos,
+      foto: {
+        tipoMime,
+        tamanoBytes,
+        contenidoBase64: foto.contenidoBase64,
+      },
+    };
   });
 
   return {
@@ -163,6 +172,11 @@ const validarYPrepararRespaldo = (respaldo) => {
 
 const subirFotoRestaurada = (foto, carpeta) => {
   return new Promise((resolve, reject) => {
+    const contenido = Buffer.from(foto.contenidoBase64, 'base64');
+    if (!contenido.length || contenido.length !== foto.tamanoBytes) {
+      return reject(new Error('La foto está dañada o incompleta'));
+    }
+
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: carpeta,
@@ -175,7 +189,7 @@ const subirFotoRestaurada = (foto, carpeta) => {
       }
     );
 
-    stream.end(foto.contenido);
+    stream.end(contenido);
   });
 };
 
@@ -282,12 +296,13 @@ router.post(
 
       let respaldo;
       try {
-        respaldo = JSON.parse(req.file.buffer.toString('utf8'));
+        respaldo = JSON.parse(await fs.readFile(req.file.path, 'utf8'));
       } catch {
         return res.status(400).json({ mensaje: 'El archivo JSON está dañado o no es válido' });
       }
 
       const preparado = validarYPrepararRespaldo(respaldo);
+      respaldo = null;
       const carpeta = `productos/restaurados/${Date.now()}`;
       const productosRestaurados = [];
 
@@ -300,6 +315,7 @@ router.post(
           fotosSubidas.push(resultado.public_id);
           datos.imagenUrl = resultado.secure_url;
           datos.imagenPublicId = resultado.public_id;
+          producto.foto.contenidoBase64 = null;
         }
 
         productosRestaurados.push(datos);
@@ -345,6 +361,9 @@ router.post(
       });
     } finally {
       if (session) await session.endSession();
+      if (req.file?.path) {
+        await fs.unlink(req.file.path).catch(() => {});
+      }
     }
   }
 );
