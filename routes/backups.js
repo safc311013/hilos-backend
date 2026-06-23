@@ -1,8 +1,5 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const multer = require('multer');
-const os = require('os');
-const fs = require('fs/promises');
 const Producto = require('../models/Producto');
 const HistorialProducto = require('../models/HistorialProducto');
 const cloudinary = require('../config/cloudinary');
@@ -11,37 +8,7 @@ const { sendEvent } = require('../utils/sseManager');
 
 const router = express.Router();
 const TIEMPO_LIMITE_FOTO_MS = 30000;
-const TAMANO_MAXIMO_RESPALDO = 1024 * 1024 * 1024;
 const TIPOS_FOTO_PERMITIDOS = new Set(['image/jpeg', 'image/png', 'image/webp']);
-
-const uploadRespaldo = multer({
-  dest: os.tmpdir(),
-  limits: { fileSize: TAMANO_MAXIMO_RESPALDO, files: 1 },
-  fileFilter: (req, file, cb) => {
-    const nombreValido = String(file.originalname || '').toLowerCase().endsWith('.json');
-    const mimeValido = ['', 'application/json', 'text/json', 'application/octet-stream'].includes(
-      file.mimetype
-    );
-
-    if (!nombreValido || !mimeValido) {
-      return cb(new Error('Selecciona un archivo de respaldo JSON válido'));
-    }
-
-    return cb(null, true);
-  },
-});
-
-const recibirArchivoRespaldo = (req, res, next) => {
-  uploadRespaldo.single('respaldo')(req, res, (error) => {
-    if (!error) return next();
-
-    const mensaje =
-      error.code === 'LIMIT_FILE_SIZE'
-        ? 'El respaldo supera el límite de 1 GB'
-        : error.message;
-    return res.status(400).json({ mensaje });
-  });
-};
 
 const obtenerUrlFoto = (producto) => {
   if (producto.imagenPublicId) {
@@ -105,69 +72,106 @@ const descargarFoto = async (producto) => {
   }
 };
 
-const validarYPrepararRespaldo = (respaldo) => {
-  if (!respaldo || respaldo.formato !== 'hilos-inventario-backup' || respaldo.version !== 1) {
-    throw new Error('El archivo no es una copia de seguridad compatible');
+let modulosStreamingPromise;
+
+const obtenerModulosStreaming = () => {
+  if (!modulosStreamingPromise) {
+    modulosStreamingPromise = Promise.all([
+      import('stream-json'),
+      import('stream-json/filters/pick.js'),
+      import('stream-json/streamers/stream-array.js'),
+      import('stream-chain'),
+    ]);
   }
 
-  if (!Array.isArray(respaldo.productos) || !Array.isArray(respaldo.historialProductos)) {
-    throw new Error('El respaldo no contiene la estructura completa del inventario');
-  }
+  return modulosStreamingPromise;
+};
 
-  const codigos = new Set();
-  const productos = respaldo.productos.map((registro, index) => {
-    if (!registro?.datos || typeof registro.datos !== 'object') {
-      throw new Error(`El producto ${index + 1} no contiene datos válidos`);
-    }
+const crearLectoresRestauracion = async (origen) => {
+  const [{ parser }, { pick }, { streamArray }, { chain }] = await obtenerModulosStreaming();
+  const analizador = chain([parser()]);
+  const productos = chain([pick({ filter: 'productos' }), streamArray()]);
+  const historial = chain([pick({ filter: 'historialProductos' }), streamArray()]);
 
-    const datos = { ...registro.datos };
-    const codigo = String(datos.codigo || '').trim().toUpperCase();
+  const propagarError = (error) => {
+    productos.destroy(error);
+    historial.destroy(error);
+  };
 
-    if (!codigo || codigos.has(codigo)) {
-      throw new Error(`El código del producto ${index + 1} está vacío o duplicado`);
-    }
-
-    if (!mongoose.isValidObjectId(datos._id)) {
-      throw new Error(`El producto ${codigo} tiene un identificador inválido`);
-    }
-
-    codigos.add(codigo);
-    datos.codigo = codigo;
-
-    const foto = registro.foto;
-    if (!foto) {
-      if (datos.imagenUrl || datos.imagenPublicId) {
-        throw new Error(`El respaldo no contiene la foto registrada para ${codigo}`);
-      }
-      datos.imagenUrl = '';
-      datos.imagenPublicId = '';
-      return { datos, foto: null };
-    }
-
-    const tipoMime = String(foto.tipoMime || '').toLowerCase();
-    if (!TIPOS_FOTO_PERMITIDOS.has(tipoMime) || !foto.contenidoBase64) {
-      throw new Error(`La foto del producto ${codigo} no es válida`);
-    }
-
-    const tamanoBytes = Number(foto.tamanoBytes);
-    if (!Number.isSafeInteger(tamanoBytes) || tamanoBytes <= 0) {
-      throw new Error(`La foto del producto ${codigo} está dañada o incompleta`);
-    }
-
-    return {
-      datos,
-      foto: {
-        tipoMime,
-        tamanoBytes,
-        contenidoBase64: foto.contenidoBase64,
-      },
-    };
-  });
+  origen.once('error', propagarError);
+  analizador.once('error', propagarError);
+  analizador.pipe(productos);
+  analizador.pipe(historial);
+  origen.pipe(analizador);
 
   return {
     productos,
-    historial: respaldo.historialProductos.map((registro) => ({ ...registro })),
+    historial,
+    cancelar: () => {
+      origen.unpipe(analizador);
+      origen.resume();
+      analizador.destroy();
+      productos.destroy();
+      historial.destroy();
+    },
   };
+};
+
+const validarProductoRespaldo = (registro, index, codigos) => {
+  if (!registro?.datos || typeof registro.datos !== 'object') {
+    throw new Error(`El producto ${index + 1} no contiene datos válidos`);
+  }
+
+  const datos = { ...registro.datos };
+  const codigo = String(datos.codigo || '').trim().toUpperCase();
+
+  if (!codigo || codigos.has(codigo)) {
+    throw new Error(`El código del producto ${index + 1} está vacío o duplicado`);
+  }
+
+  if (!mongoose.isValidObjectId(datos._id)) {
+    throw new Error(`El producto ${codigo} tiene un identificador inválido`);
+  }
+
+  codigos.add(codigo);
+  datos.codigo = codigo;
+
+  const foto = registro.foto;
+  if (!foto) {
+    if (datos.imagenUrl || datos.imagenPublicId) {
+      throw new Error(`El respaldo no contiene la foto registrada para ${codigo}`);
+    }
+    datos.imagenUrl = '';
+    datos.imagenPublicId = '';
+    return { datos, foto: null };
+  }
+
+  const tipoMime = String(foto.tipoMime || '').toLowerCase();
+  if (!TIPOS_FOTO_PERMITIDOS.has(tipoMime) || !foto.contenidoBase64) {
+    throw new Error(`La foto del producto ${codigo} no es válida`);
+  }
+
+  const tamanoBytes = Number(foto.tamanoBytes);
+  if (!Number.isSafeInteger(tamanoBytes) || tamanoBytes <= 0) {
+    throw new Error(`La foto del producto ${codigo} está dañada o incompleta`);
+  }
+
+  return {
+    datos,
+    foto: {
+      tipoMime,
+      tamanoBytes,
+      contenidoBase64: foto.contenidoBase64,
+    },
+  };
+};
+
+const validarResumenRestaurado = (esperado, actual, nombre) => {
+  if (esperado !== actual) {
+    throw new Error(
+      `El respaldo está incompleto: se esperaban ${esperado} ${nombre} y se encontraron ${actual}`
+    );
+  }
 };
 
 const subirFotoRestaurada = (foto, carpeta) => {
@@ -197,6 +201,22 @@ const eliminarFotosSubidas = async (publicIds) => {
   await Promise.allSettled(publicIds.map((publicId) => cloudinary.uploader.destroy(publicId)));
 };
 
+const escribirFragmento = (stream, contenido) => {
+  return new Promise((resolve, reject) => {
+    stream.write(contenido, 'utf8', (error) => {
+      if (error) return reject(error);
+      return resolve();
+    });
+  });
+};
+
+const finalizarEscritura = (stream) => {
+  return new Promise((resolve, reject) => {
+    stream.once('error', reject);
+    stream.end(resolve);
+  });
+};
+
 router.get('/inventario/resumen', proteger, soloAdmin, async (req, res) => {
   try {
     const [productos, productosConFoto, registrosHistorial] = await Promise.all([
@@ -221,31 +241,19 @@ router.get('/inventario/resumen', proteger, soloAdmin, async (req, res) => {
 
 router.get('/inventario/descargar', proteger, soloAdmin, async (req, res) => {
   try {
-    const [productos, historial] = await Promise.all([
-      Producto.find({}).sort({ codigo: 1 }).lean(),
-      HistorialProducto.find({}).sort({ createdAt: 1 }).lean(),
+    const [totalProductos, fotosIncluidas, registrosHistorial] = await Promise.all([
+      Producto.countDocuments({}),
+      Producto.countDocuments({
+        $or: [
+          { imagenPublicId: { $exists: true, $ne: '' } },
+          { imagenUrl: { $exists: true, $ne: '' } },
+        ],
+      }),
+      HistorialProducto.countDocuments({}),
     ]);
 
-    const productosRespaldados = [];
-    let fotosIncluidas = 0;
-    let bytesFotos = 0;
-
-    // Se descargan en serie para no saturar la memoria ni Cloudinary.
-    for (const producto of productos) {
-      const foto = await descargarFoto(producto);
-      if (foto) {
-        fotosIncluidas += 1;
-        bytesFotos += foto.tamanoBytes;
-      }
-
-      productosRespaldados.push({
-        datos: producto,
-        foto,
-      });
-    }
-
     const creadoEn = new Date();
-    const respaldo = {
+    const cabecera = {
       formato: 'hilos-inventario-backup',
       version: 1,
       creadoEn: creadoEn.toISOString(),
@@ -255,13 +263,11 @@ router.get('/inventario/descargar', proteger, soloAdmin, async (req, res) => {
         email: req.usuario.email,
       },
       resumen: {
-        productos: productosRespaldados.length,
+        productos: totalProductos,
         fotosIncluidas,
-        bytesFotos,
-        registrosHistorial: historial.length,
+        bytesFotos: null,
+        registrosHistorial,
       },
-      productos: productosRespaldados,
-      historialProductos: historial,
     };
 
     const fechaArchivo = creadoEn.toISOString().replace(/[:.]/g, '-');
@@ -270,13 +276,40 @@ router.get('/inventario/descargar', proteger, soloAdmin, async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${nombreArchivo}"`);
     res.setHeader('Cache-Control', 'no-store');
-    return res.send(JSON.stringify(respaldo));
+
+    await escribirFragmento(res, `${JSON.stringify(cabecera).slice(0, -1)},"productos":[`);
+
+    let primerProducto = true;
+    const cursorProductos = Producto.find({}).sort({ codigo: 1 }).lean().cursor();
+    for await (const producto of cursorProductos) {
+      const foto = await descargarFoto(producto);
+      const registro = JSON.stringify({ datos: producto, foto });
+      await escribirFragmento(res, `${primerProducto ? '' : ','}${registro}`);
+      primerProducto = false;
+    }
+
+    await escribirFragmento(res, '],"historialProductos":[');
+
+    let primerHistorial = true;
+    const cursorHistorial = HistorialProducto.find({}).sort({ createdAt: 1 }).lean().cursor();
+    for await (const registro of cursorHistorial) {
+      await escribirFragmento(res, `${primerHistorial ? '' : ','}${JSON.stringify(registro)}`);
+      primerHistorial = false;
+    }
+
+    await escribirFragmento(res, ']}');
+    await finalizarEscritura(res);
   } catch (error) {
     console.error('Error al crear respaldo de inventario:', error);
-    return res.status(502).json({
-      mensaje: 'No se pudo crear una copia completa del inventario',
-      error: error.message,
-    });
+
+    if (!res.headersSent) {
+      return res.status(502).json({
+        mensaje: 'No se pudo crear una copia completa del inventario',
+        error: error.message,
+      });
+    }
+
+    res.destroy(error);
   }
 });
 
@@ -284,50 +317,75 @@ router.post(
   '/inventario/restaurar',
   proteger,
   soloAdmin,
-  recibirArchivoRespaldo,
   async (req, res) => {
     const fotosSubidas = [];
     let session;
+    let cancelarLectura;
 
     try {
-      if (!req.file) {
-        return res.status(400).json({ mensaje: 'No se recibió el archivo de respaldo' });
+      if (!String(req.headers['content-type'] || '').startsWith('application/octet-stream')) {
+        return res.status(415).json({ mensaje: 'El archivo de respaldo no tiene un formato válido' });
       }
 
-      let respaldo;
-      try {
-        respaldo = JSON.parse(await fs.readFile(req.file.path, 'utf8'));
-      } catch {
-        return res.status(400).json({ mensaje: 'El archivo JSON está dañado o no es válido' });
+      const resumenEsperado = {
+        productos: Number(req.headers['x-respaldo-productos']),
+        registrosHistorial: Number(req.headers['x-respaldo-historial']),
+      };
+      if (
+        !Number.isSafeInteger(resumenEsperado.productos) ||
+        !Number.isSafeInteger(resumenEsperado.registrosHistorial) ||
+        resumenEsperado.productos < 0 ||
+        resumenEsperado.registrosHistorial < 0
+      ) {
+        return res.status(400).json({ mensaje: 'El resumen del respaldo no es válido' });
       }
 
-      const preparado = validarYPrepararRespaldo(respaldo);
-      respaldo = null;
       const carpeta = `productos/restaurados/${Date.now()}`;
       const productosRestaurados = [];
+      const historialRestaurado = [];
+      const codigos = new Set();
+      const lectores = await crearLectoresRestauracion(req);
+      cancelarLectura = lectores.cancelar;
 
-      // Las fotos se completan antes de modificar MongoDB.
-      for (const producto of preparado.productos) {
-        const datos = { ...producto.datos };
+      await Promise.all([
+        (async () => {
+          for await (const { key, value } of lectores.productos) {
+            const producto = validarProductoRespaldo(value, key, codigos);
+            const datos = { ...producto.datos };
 
-        if (producto.foto) {
-          const resultado = await subirFotoRestaurada(producto.foto, carpeta);
-          fotosSubidas.push(resultado.public_id);
-          datos.imagenUrl = resultado.secure_url;
-          datos.imagenPublicId = resultado.public_id;
-          producto.foto.contenidoBase64 = null;
-        }
+            if (producto.foto) {
+              const resultado = await subirFotoRestaurada(producto.foto, carpeta);
+              fotosSubidas.push(resultado.public_id);
+              datos.imagenUrl = resultado.secure_url;
+              datos.imagenPublicId = resultado.public_id;
+              producto.foto.contenidoBase64 = null;
+              value.foto.contenidoBase64 = null;
+            }
 
-        productosRestaurados.push(datos);
-      }
+            await new Producto(datos).validate();
+            productosRestaurados.push(datos);
+          }
+        })(),
+        (async () => {
+          for await (const { value } of lectores.historial) {
+            const datos = { ...value };
+            await new HistorialProducto(datos).validate();
+            historialRestaurado.push(datos);
+          }
+        })(),
+      ]);
+      cancelarLectura = null;
 
-      // Valida los esquemas antes de abrir la transacción destructiva.
-      for (const datos of productosRestaurados) {
-        await new Producto(datos).validate();
-      }
-      for (const datos of preparado.historial) {
-        await new HistorialProducto(datos).validate();
-      }
+      validarResumenRestaurado(
+        resumenEsperado.productos,
+        productosRestaurados.length,
+        'productos'
+      );
+      validarResumenRestaurado(
+        resumenEsperado.registrosHistorial,
+        historialRestaurado.length,
+        'registros de historial'
+      );
 
       session = await mongoose.startSession();
       await session.withTransaction(async () => {
@@ -337,8 +395,8 @@ router.post(
         if (productosRestaurados.length) {
           await Producto.insertMany(productosRestaurados, { session });
         }
-        if (preparado.historial.length) {
-          await HistorialProducto.insertMany(preparado.historial, { session });
+        if (historialRestaurado.length) {
+          await HistorialProducto.insertMany(historialRestaurado, { session });
         }
       });
 
@@ -349,10 +407,11 @@ router.post(
         resumen: {
           productos: productosRestaurados.length,
           fotosRestauradas: fotosSubidas.length,
-          registrosHistorial: preparado.historial.length,
+          registrosHistorial: historialRestaurado.length,
         },
       });
     } catch (error) {
+      if (cancelarLectura) cancelarLectura();
       await eliminarFotosSubidas(fotosSubidas);
       console.error('Error al restaurar respaldo de inventario:', error);
       return res.status(500).json({
@@ -361,9 +420,6 @@ router.post(
       });
     } finally {
       if (session) await session.endSession();
-      if (req.file?.path) {
-        await fs.unlink(req.file.path).catch(() => {});
-      }
     }
   }
 );
