@@ -1,5 +1,19 @@
 const jwt = require('jsonwebtoken');
 const Usuario = require('../models/Usuario');
+const SesionUsuario = require('../models/SesionUsuario');
+
+const cerrarSesionAuditada = async (token, motivoCierre, detalleCierre) => {
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+    if (!decoded?.sid) return;
+    await SesionUsuario.findOneAndUpdate(
+      { sesionId: decoded.sid, estado: 'activa' },
+      { $set: { estado: 'cerrada', finAt: new Date(), motivoCierre, detalleCierre } }
+    );
+  } catch {
+    // Un fallo de auditoría no debe ocultar la respuesta de autenticación.
+  }
+};
 
 const proteger = async (req, res, next) => {
   try {
@@ -22,12 +36,26 @@ const proteger = async (req, res, next) => {
     const usuario = await Usuario.findById(decoded.id).select('-password');
 
     if (!usuario || !usuario.activo) {
+      await cerrarSesionAuditada(
+        token,
+        'usuario_inactivo',
+        usuario ? 'La cuenta fue desactivada.' : 'La cuenta ya no existe.'
+      );
       return res.status(401).json({ mensaje: 'Usuario inválido o inactivo' });
     }
 
     req.usuario = usuario;
     next();
   } catch (error) {
+    if (token) {
+      await cerrarSesionAuditada(
+        token,
+        error?.name === 'TokenExpiredError' ? 'token_expirado' : 'error_autenticacion',
+        error?.name === 'TokenExpiredError'
+          ? 'La sesión expiró automáticamente.'
+          : 'La aplicación rechazó la sesión por un error de autenticación.'
+      );
+    }
     return res.status(401).json({ mensaje: 'Token inválido' });
   }
 };

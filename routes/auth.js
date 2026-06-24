@@ -1,19 +1,21 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
+const { randomUUID } = require('crypto');
 const Usuario = require('../models/Usuario');
+const SesionUsuario = require('../models/SesionUsuario');
 const { proteger } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
 const ROLES_APP_ANDROID = ['admin', 'supervisor'];
 
-const generarToken = (id) => {
+const generarToken = (id, sesionId) => {
   if (!process.env.JWT_SECRET) {
     throw new Error('JWT_SECRET no está configurado en el entorno');
   }
 
   return jwt.sign(
-    { id },
+    { id, sid: sesionId },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '16h' }
   );
@@ -34,6 +36,11 @@ const serializarUsuario = (usuario) => ({
 
 const puedeEntrarAppAndroid = (usuario) => {
   return ROLES_APP_ANDROID.includes(usuario.rol);
+};
+
+const obtenerIp = (req) => {
+  const reenviada = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return reenviada || req.ip || req.socket?.remoteAddress || '';
 };
 
 const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) => {
@@ -88,7 +95,26 @@ const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) =
       });
     }
 
-    const token = generarToken(usuario._id);
+    const sesionId = randomUUID();
+    const plataformaSolicitada = String(req.body.plataforma || '').toLowerCase();
+    const plataforma = restringirParaAndroid
+      ? 'android'
+      : plataformaSolicitada === 'desktop'
+        ? 'desktop'
+        : 'web';
+
+    await SesionUsuario.create({
+      usuario: usuario._id,
+      sesionId,
+      nombreUsuario: usuario.nombre,
+      emailUsuario: usuario.email,
+      rolUsuario: usuario.rol,
+      plataforma,
+      ip: obtenerIp(req),
+      agenteUsuario: String(req.headers['user-agent'] || '').slice(0, 500),
+    });
+
+    const token = generarToken(usuario._id, sesionId);
 
     return res.json({
       mensaje: 'Inicio de sesión exitoso',
@@ -125,6 +151,35 @@ router.post('/login', async (req, res) => {
  */
 router.post('/login-app', async (req, res) => {
   return procesarLogin(req, res, { restringirParaAndroid: true });
+});
+
+router.post('/logout', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.startsWith('Bearer ')
+      ? req.headers.authorization.split(' ')[1]
+      : '';
+    const decoded = token
+      ? jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true })
+      : null;
+
+    if (decoded?.sid) {
+      await SesionUsuario.findOneAndUpdate(
+        { sesionId: decoded.sid, estado: 'activa' },
+        {
+          $set: {
+            estado: 'cerrada',
+            finAt: new Date(),
+            motivoCierre: 'salida_voluntaria',
+            detalleCierre: 'El usuario utilizó el botón Cerrar sesión.',
+          },
+        }
+      );
+    }
+
+    return res.json({ mensaje: 'Sesión cerrada correctamente' });
+  } catch {
+    return res.status(500).json({ mensaje: 'No se pudo registrar el cierre de sesión' });
+  }
 });
 
 /**

@@ -1,5 +1,6 @@
 const express = require('express');
 const Usuario = require('../models/Usuario');
+const SesionUsuario = require('../models/SesionUsuario');
 const { proteger, soloAdmin } = require('../middleware/authMiddleware');
 const { sendEvent } = require('../utils/sseManager');
 
@@ -54,6 +55,23 @@ router.post('/', proteger, soloAdmin, async (req, res) => {
     res.status(201).json(usuarioSinPassword);
   } catch (error) {
     res.status(400).json({ mensaje: 'Error al crear usuario', error: error.message });
+  }
+});
+
+router.get('/historial-sesiones', proteger, soloAdmin, async (req, res) => {
+  try {
+    const filtro = {};
+    if (req.query.usuarioId) filtro.usuario = req.query.usuarioId;
+    if (req.query.motivo === 'activa') filtro.estado = 'activa';
+    if (req.query.motivo && !['todas', 'activa'].includes(req.query.motivo)) {
+      filtro.motivoCierre = req.query.motivo;
+    }
+
+    const limite = Math.min(Math.max(Number(req.query.limite) || 100, 1), 500);
+    const sesiones = await SesionUsuario.find(filtro).sort({ inicioAt: -1 }).limit(limite).lean();
+    res.json(sesiones);
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al obtener el historial de sesiones', error: error.message });
   }
 });
 
