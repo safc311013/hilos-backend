@@ -29,7 +29,10 @@ const proteger = async (req, res, next) => {
     if (!token) {
       return res
         .status(401)
-        .json({ mensaje: 'No autorizado, token no proporcionado' });
+        .json({
+          mensaje: 'No autorizado, token no proporcionado',
+          codigo: 'SESION_INVALIDA',
+        });
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -41,7 +44,10 @@ const proteger = async (req, res, next) => {
         'usuario_inactivo',
         usuario ? 'La cuenta fue desactivada.' : 'La cuenta ya no existe.'
       );
-      return res.status(401).json({ mensaje: 'Usuario inválido o inactivo' });
+      return res.status(401).json({
+        mensaje: 'Usuario inválido o inactivo',
+        codigo: 'USUARIO_INACTIVO',
+      });
     }
 
     req.usuario = usuario;
@@ -56,7 +62,10 @@ const proteger = async (req, res, next) => {
           : 'La aplicación rechazó la sesión por un error de autenticación.'
       );
     }
-    return res.status(401).json({ mensaje: 'Token inválido' });
+    return res.status(401).json({
+      mensaje: error?.name === 'TokenExpiredError' ? 'Tu sesión venció' : 'Token inválido',
+      codigo: error?.name === 'TokenExpiredError' ? 'SESION_VENCIDA' : 'SESION_INVALIDA',
+    });
   }
 };
 
