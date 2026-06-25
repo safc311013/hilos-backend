@@ -13,6 +13,18 @@ const serializarUsuario = (usuario) => {
   return sinPassword;
 };
 
+const obtenerFechaInicioDia = (valor) => {
+  if (!valor) return null;
+  const fecha = new Date(`${valor}T00:00:00`);
+  return Number.isNaN(fecha.getTime()) ? null : fecha;
+};
+
+const obtenerFechaFinDia = (valor) => {
+  if (!valor) return null;
+  const fecha = new Date(`${valor}T23:59:59.999`);
+  return Number.isNaN(fecha.getTime()) ? null : fecha;
+};
+
 const marcarSesionesVencidas = async () => {
   const ahora = new Date();
   const inicioMaximoActivo = new Date(ahora.getTime() - parseExpiresInToMs());
@@ -102,8 +114,15 @@ router.get('/historial-sesiones', proteger, soloAdmin, async (req, res) => {
     if (req.query.motivo && !['todas', 'activa'].includes(req.query.motivo)) {
       filtro.motivoCierre = req.query.motivo;
     }
+    const desde = obtenerFechaInicioDia(req.query.desde);
+    const hasta = obtenerFechaFinDia(req.query.hasta);
+    if (desde || hasta) {
+      filtro.inicioAt = {};
+      if (desde) filtro.inicioAt.$gte = desde;
+      if (hasta) filtro.inicioAt.$lte = hasta;
+    }
 
-    const limite = Math.min(Math.max(Number(req.query.limite) || 100, 1), 500);
+    const limite = Math.min(Math.max(Number(req.query.limite) || 100, 1), 1000);
     const sesiones = await SesionUsuario.find(filtro).sort({ inicioAt: -1 }).limit(limite).lean();
     res.json(sesiones);
   } catch (error) {
