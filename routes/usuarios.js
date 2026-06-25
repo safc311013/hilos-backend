@@ -3,6 +3,7 @@ const Usuario = require('../models/Usuario');
 const SesionUsuario = require('../models/SesionUsuario');
 const { proteger, soloAdmin } = require('../middleware/authMiddleware');
 const { sendEvent } = require('../utils/sseManager');
+const { calcularExpiraAt, parseExpiresInToMs } = require('../utils/sessionExpiration');
 
 const router = express.Router();
 
@@ -10,6 +11,39 @@ const serializarUsuario = (usuario) => {
   const obj = typeof usuario.toObject === 'function' ? usuario.toObject() : usuario;
   const { password, ...sinPassword } = obj;
   return sinPassword;
+};
+
+const marcarSesionesVencidas = async () => {
+  const ahora = new Date();
+  const inicioMaximoActivo = new Date(ahora.getTime() - parseExpiresInToMs());
+
+  const vencidas = await SesionUsuario.find({
+    estado: 'activa',
+    $or: [
+      { expiraAt: { $lte: ahora } },
+      { expiraAt: null, inicioAt: { $lte: inicioMaximoActivo } },
+      { expiraAt: { $exists: false }, inicioAt: { $lte: inicioMaximoActivo } },
+    ],
+  }).select('_id inicioAt expiraAt').lean();
+
+  if (vencidas.length === 0) return;
+
+  await SesionUsuario.bulkWrite(
+    vencidas.map((sesion) => ({
+      updateOne: {
+        filter: { _id: sesion._id, estado: 'activa' },
+        update: {
+          $set: {
+            estado: 'cerrada',
+            finAt: sesion.expiraAt || calcularExpiraAt(sesion.inicioAt),
+            expiraAt: sesion.expiraAt || calcularExpiraAt(sesion.inicioAt),
+            motivoCierre: 'token_expirado',
+            detalleCierre: 'La sesiÃ³n se marcÃ³ como expirada al actualizar el historial.',
+          },
+        },
+      },
+    }))
+  );
 };
 
 router.get('/', proteger, soloAdmin, async (req, res) => {
@@ -60,6 +94,8 @@ router.post('/', proteger, soloAdmin, async (req, res) => {
 
 router.get('/historial-sesiones', proteger, soloAdmin, async (req, res) => {
   try {
+    await marcarSesionesVencidas();
+
     const filtro = {};
     if (req.query.usuarioId) filtro.usuario = req.query.usuarioId;
     if (req.query.motivo === 'activa') filtro.estado = 'activa';

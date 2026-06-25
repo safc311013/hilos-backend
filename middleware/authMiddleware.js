@@ -2,13 +2,14 @@ const jwt = require('jsonwebtoken');
 const Usuario = require('../models/Usuario');
 const SesionUsuario = require('../models/SesionUsuario');
 
-const cerrarSesionAuditada = async (token, motivoCierre, detalleCierre) => {
+const cerrarSesionAuditada = async (token, motivoCierre, detalleCierre, finAt = null) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
     if (!decoded?.sid) return;
+    const fechaCierre = finAt || (motivoCierre === 'token_expirado' && decoded.exp ? new Date(decoded.exp * 1000) : new Date());
     await SesionUsuario.findOneAndUpdate(
       { sesionId: decoded.sid, estado: 'activa' },
-      { $set: { estado: 'cerrada', finAt: new Date(), motivoCierre, detalleCierre } }
+      { $set: { estado: 'cerrada', finAt: fechaCierre, motivoCierre, detalleCierre } }
     );
   } catch {
     // Un fallo de auditoría no debe ocultar la respuesta de autenticación.

@@ -4,6 +4,7 @@ const { randomUUID } = require('crypto');
 const Usuario = require('../models/Usuario');
 const SesionUsuario = require('../models/SesionUsuario');
 const { proteger } = require('../middleware/authMiddleware');
+const { calcularExpiraAt } = require('../utils/sessionExpiration');
 
 const router = express.Router();
 
@@ -96,6 +97,7 @@ const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) =
     }
 
     const sesionId = randomUUID();
+    const inicioAt = new Date();
     const plataformaSolicitada = String(req.body.plataforma || '').toLowerCase();
     const plataforma = restringirParaAndroid
       ? 'android'
@@ -112,6 +114,8 @@ const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) =
       plataforma,
       ip: obtenerIp(req),
       agenteUsuario: String(req.headers['user-agent'] || '').slice(0, 500),
+      inicioAt,
+      expiraAt: calcularExpiraAt(inicioAt),
     });
 
     const token = generarToken(usuario._id, sesionId);

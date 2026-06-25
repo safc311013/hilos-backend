@@ -11,6 +11,7 @@ const sesionUsuarioSchema = new mongoose.Schema(
     ip: { type: String, default: '' },
     agenteUsuario: { type: String, default: '' },
     inicioAt: { type: Date, required: true, default: Date.now, index: true },
+    expiraAt: { type: Date, default: null, index: true },
     finAt: { type: Date, default: null },
     estado: { type: String, enum: ['activa', 'cerrada'], default: 'activa', index: true },
     motivoCierre: {
