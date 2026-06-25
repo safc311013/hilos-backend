@@ -9,6 +9,8 @@ const sesionUsuarioSchema = new mongoose.Schema(
     rolUsuario: { type: String, required: true },
     plataforma: { type: String, enum: ['web', 'android', 'desktop'], default: 'web' },
     ip: { type: String, default: '' },
+    ipServidor: { type: String, default: '' },
+    ipPublicaCliente: { type: String, default: '' },
     agenteUsuario: { type: String, default: '' },
     inicioAt: { type: Date, required: true, default: Date.now, index: true },
     expiraAt: { type: Date, default: null, index: true },

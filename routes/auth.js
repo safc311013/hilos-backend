@@ -44,6 +44,11 @@ const obtenerIp = (req) => {
   return reenviada || req.ip || req.socket?.remoteAddress || '';
 };
 
+const limpiarIp = (valor) => {
+  const ip = String(valor || '').trim();
+  return ip.length <= 80 ? ip : '';
+};
+
 const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
@@ -104,6 +109,8 @@ const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) =
       : plataformaSolicitada === 'desktop'
         ? 'desktop'
         : 'web';
+    const ipServidor = limpiarIp(obtenerIp(req));
+    const ipPublicaCliente = limpiarIp(req.body.ipPublicaCliente);
 
     await SesionUsuario.create({
       usuario: usuario._id,
@@ -112,7 +119,9 @@ const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) =
       emailUsuario: usuario.email,
       rolUsuario: usuario.rol,
       plataforma,
-      ip: obtenerIp(req),
+      ip: ipPublicaCliente || ipServidor,
+      ipServidor,
+      ipPublicaCliente,
       agenteUsuario: String(req.headers['user-agent'] || '').slice(0, 500),
       inicioAt,
       expiraAt: calcularExpiraAt(inicioAt),

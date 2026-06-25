@@ -19,6 +19,7 @@ const impresoraRedRoutes = require('./routes/impresoraRed');
 const backupsRoutes = require('./routes/backups');
 
 const app = express();
+app.set('trust proxy', true);
 
 /**
  * CORS flexible para no romper frontend web ni desarrollo local.
