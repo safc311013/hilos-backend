@@ -11,6 +11,15 @@ const sesionUsuarioSchema = new mongoose.Schema(
     ip: { type: String, default: '' },
     ipServidor: { type: String, default: '' },
     ipPublicaCliente: { type: String, default: '' },
+    dispositivoId: { type: String, default: '', index: true },
+    dispositivoNombre: { type: String, default: '' },
+    navegador: { type: String, default: '' },
+    sistemaOperativo: { type: String, default: '' },
+    idioma: { type: String, default: '' },
+    zonaHoraria: { type: String, default: '' },
+    pantalla: { type: String, default: '' },
+    esDispositivoNuevo: { type: Boolean, default: false, index: true },
+    esNuevaIpPublica: { type: Boolean, default: false, index: true },
     agenteUsuario: { type: String, default: '' },
     inicioAt: { type: Date, required: true, default: Date.now, index: true },
     expiraAt: { type: Date, default: null, index: true },
@@ -27,5 +36,7 @@ const sesionUsuarioSchema = new mongoose.Schema(
 );
 
 sesionUsuarioSchema.index({ inicioAt: -1, usuario: 1 });
+sesionUsuarioSchema.index({ usuario: 1, dispositivoId: 1 });
+sesionUsuarioSchema.index({ usuario: 1, ipPublicaCliente: 1 });
 
 module.exports = mongoose.model('SesionUsuario', sesionUsuarioSchema);

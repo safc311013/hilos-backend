@@ -50,7 +50,7 @@ const marcarSesionesVencidas = async () => {
             finAt: sesion.expiraAt || calcularExpiraAt(sesion.inicioAt),
             expiraAt: sesion.expiraAt || calcularExpiraAt(sesion.inicioAt),
             motivoCierre: 'token_expirado',
-            detalleCierre: 'La sesiÃ³n se marcÃ³ como expirada al actualizar el historial.',
+            detalleCierre: 'La sesión se marcó como expirada al actualizar el historial.',
           },
         },
       },

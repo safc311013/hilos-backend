@@ -49,6 +49,48 @@ const limpiarIp = (valor) => {
   return ip.length <= 80 ? ip : '';
 };
 
+const limpiarTexto = (valor, limite = 120) => {
+  return String(valor || '').trim().slice(0, limite);
+};
+
+const obtenerInfoDispositivo = (body = {}) => {
+  const dispositivo = body.dispositivo && typeof body.dispositivo === 'object'
+    ? body.dispositivo
+    : {};
+
+  return {
+    dispositivoId: limpiarTexto(dispositivo.id, 120),
+    dispositivoNombre: limpiarTexto(dispositivo.nombre, 120),
+    navegador: limpiarTexto(dispositivo.navegador, 120),
+    sistemaOperativo: limpiarTexto(dispositivo.sistemaOperativo, 120),
+    idioma: limpiarTexto(dispositivo.idioma, 40),
+    zonaHoraria: limpiarTexto(dispositivo.zonaHoraria, 80),
+    pantalla: limpiarTexto(dispositivo.pantalla, 40),
+  };
+};
+
+const detectarAlertasAcceso = async (usuarioId, { dispositivoId, ipPublicaCliente }) => {
+  const sesionesPrevias = await SesionUsuario.find({ usuario: usuarioId })
+    .select('dispositivoId ipPublicaCliente')
+    .sort({ inicioAt: -1 })
+    .limit(100)
+    .lean();
+
+  if (sesionesPrevias.length === 0) {
+    return {
+      esDispositivoNuevo: false,
+      esNuevaIpPublica: false,
+    };
+  }
+
+  return {
+    esDispositivoNuevo: Boolean(dispositivoId)
+      && !sesionesPrevias.some((sesion) => sesion.dispositivoId === dispositivoId),
+    esNuevaIpPublica: Boolean(ipPublicaCliente)
+      && !sesionesPrevias.some((sesion) => sesion.ipPublicaCliente === ipPublicaCliente),
+  };
+};
+
 const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
@@ -111,6 +153,11 @@ const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) =
         : 'web';
     const ipServidor = limpiarIp(obtenerIp(req));
     const ipPublicaCliente = limpiarIp(req.body.ipPublicaCliente);
+    const dispositivo = obtenerInfoDispositivo(req.body);
+    const alertasAcceso = await detectarAlertasAcceso(usuario._id, {
+      dispositivoId: dispositivo.dispositivoId,
+      ipPublicaCliente,
+    });
 
     await SesionUsuario.create({
       usuario: usuario._id,
@@ -122,6 +169,8 @@ const procesarLogin = async (req, res, { restringirParaAndroid = false } = {}) =
       ip: ipPublicaCliente || ipServidor,
       ipServidor,
       ipPublicaCliente,
+      ...dispositivo,
+      ...alertasAcceso,
       agenteUsuario: String(req.headers['user-agent'] || '').slice(0, 500),
       inicioAt,
       expiraAt: calcularExpiraAt(inicioAt),

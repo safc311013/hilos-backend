@@ -107,7 +107,7 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, mensaje: 'Backend activo' });
 });
 
-// No requiere MongoDB: actua como puente local entre telefono/PC e impresora TCP.
+// No requiere MongoDB: actúa como puente local entre teléfono/PC e impresora TCP.
 app.use('/api/impresora-red', impresoraRedRoutes);
 
 app.use(async (req, res, next) => {

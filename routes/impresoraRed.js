@@ -8,11 +8,11 @@ const validarDestino = (ip, puerto) => {
   const puertoNumero = Number(puerto);
 
   if (net.isIP(ipLimpia) !== 4) {
-    throw new Error('Escribe una direccion IPv4 valida.');
+    throw new Error('Escribe una dirección IPv4 válida.');
   }
 
   if (!Number.isInteger(puertoNumero) || puertoNumero < 1 || puertoNumero > 65535) {
-    throw new Error('El puerto de la impresora no es valido.');
+    throw new Error('El puerto de la impresora no es válido.');
   }
 
   return { ip: ipLimpia, puerto: puertoNumero };
@@ -53,7 +53,7 @@ router.post('/probar', async (req, res) => {
   try {
     const destino = validarDestino(req.body?.ip, req.body?.puerto);
     await enviarAImpresora(destino);
-    res.json({ mensaje: 'Conexion correcta con la impresora.' });
+    res.json({ mensaje: 'Conexión correcta con la impresora.' });
   } catch (error) {
     res.status(400).json({ mensaje: error.message });
   }
@@ -66,7 +66,7 @@ router.post('/imprimir', async (req, res) => {
     const copias = Math.min(Math.max(Number(req.body?.copias) || 1, 1), 3);
 
     if (!texto.trim()) {
-      throw new Error('El ticket esta vacio.');
+      throw new Error('El ticket está vacío.');
     }
 
     const inicio = Buffer.from([0x1b, 0x40]);
