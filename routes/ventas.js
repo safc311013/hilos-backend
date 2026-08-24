@@ -1,6 +1,7 @@
 const express = require('express');
 const Venta = require('../models/Venta');
 const Producto = require('../models/Producto');
+const Usuario = require('../models/Usuario');
 const { proteger } = require('../middleware/authMiddleware');
 const { sendEvent } = require('../utils/sseManager');
 
@@ -25,6 +26,18 @@ const permitirAdminSupervisorOCajero = (req, res, next) => {
 
   if (!['admin', 'supervisor', 'cajero'].includes(req.usuario.rol)) {
     return res.status(403).json({ mensaje: 'No tienes permisos para esta acción' });
+  }
+
+  next();
+};
+
+const permitirSoloAdmin = (req, res, next) => {
+  if (!req.usuario) {
+    return res.status(401).json({ mensaje: 'No autorizado' });
+  }
+
+  if (req.usuario.rol !== 'admin') {
+    return res.status(403).json({ mensaje: 'Solo los administradores pueden eliminar ventas' });
   }
 
   next();
@@ -224,6 +237,86 @@ router.post('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
     res.status(201).json(ventaCompleta);
   } catch (error) {
     res.status(400).json({ mensaje: 'Error al registrar venta', error: error.message });
+  }
+});
+
+router.delete('/:id', proteger, permitirSoloAdmin, async (req, res) => {
+  try {
+    const password = String(req.body.password || '');
+
+    if (!password) {
+      return res.status(400).json({
+        mensaje: 'Debes confirmar la eliminaciÃ³n con tu contraseÃ±a de administrador',
+      });
+    }
+
+    const admin = await Usuario.findById(req.usuario._id).select('+password');
+
+    if (!admin || !admin.activo || admin.rol !== 'admin') {
+      return res.status(403).json({ mensaje: 'Administrador invÃ¡lido o inactivo' });
+    }
+
+    const passwordValido = await admin.compararPassword(password);
+
+    if (!passwordValido) {
+      return res.status(400).json({ mensaje: 'La contraseÃ±a del administrador no es correcta' });
+    }
+
+    const venta = await Venta.findById(req.params.id);
+
+    if (!venta) {
+      return res.status(404).json({ mensaje: 'Venta no encontrada' });
+    }
+
+    const productosVenta = Array.isArray(venta.productos) ? venta.productos : [];
+    const productosIds = productosVenta.map((item) => item.producto).filter(Boolean);
+    const productosExistentes = await Producto.find({ _id: { $in: productosIds } }).select('_id');
+    const productosExistentesSet = new Set(productosExistentes.map((producto) => String(producto._id)));
+    const productoFaltante = productosVenta.find(
+      (item) => item.producto && !productosExistentesSet.has(String(item.producto))
+    );
+
+    if (productoFaltante) {
+      return res.status(409).json({
+        mensaje: `No se puede eliminar la venta porque el producto ${productoFaltante.nombreProducto || productoFaltante.producto} ya no existe en inventario`,
+      });
+    }
+
+    const operacionesInventario = productosVenta
+      .filter((item) => item.producto && Number(item.cantidad || 0) > 0)
+      .map((item) => {
+        const inventarioOrigen = normalizarInventario(item.inventarioOrigen);
+        const campoStock = obtenerCampoStockInventario(inventarioOrigen);
+        const cantidad = Number(item.cantidad || 0);
+
+        return {
+          updateOne: {
+            filter: { _id: item.producto },
+            update: {
+              $inc: {
+                [campoStock]: cantidad,
+                stock: cantidad,
+              },
+            },
+          },
+        };
+      });
+
+    if (operacionesInventario.length > 0) {
+      await Producto.bulkWrite(operacionesInventario);
+    }
+
+    await Venta.deleteOne({ _id: venta._id });
+
+    sendEvent('ventas', { accion: 'eliminar', ventaId: venta._id, folio: venta.folio });
+    sendEvent('productos', { accion: 'stock_restaurado', ventaId: venta._id });
+
+    res.json({
+      mensaje: 'Venta eliminada e inventario restaurado correctamente',
+      ventaId: venta._id,
+    });
+  } catch (error) {
+    res.status(500).json({ mensaje: 'Error al eliminar venta', error: error.message });
   }
 });
 
