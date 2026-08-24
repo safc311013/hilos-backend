@@ -246,20 +246,20 @@ router.delete('/:id', proteger, permitirSoloAdmin, async (req, res) => {
 
     if (!password) {
       return res.status(400).json({
-        mensaje: 'Debes confirmar la eliminaciÃ³n con tu contraseÃ±a de administrador',
+        mensaje: 'Debes confirmar la eliminación con tu contraseña de administrador',
       });
     }
 
     const admin = await Usuario.findById(req.usuario._id).select('+password');
 
     if (!admin || !admin.activo || admin.rol !== 'admin') {
-      return res.status(403).json({ mensaje: 'Administrador invÃ¡lido o inactivo' });
+      return res.status(403).json({ mensaje: 'Administrador inválido o inactivo' });
     }
 
     const passwordValido = await admin.compararPassword(password);
 
     if (!passwordValido) {
-      return res.status(400).json({ mensaje: 'La contraseÃ±a del administrador no es correcta' });
+      return res.status(400).json({ mensaje: 'La contraseña del administrador no es correcta' });
     }
 
     const venta = await Venta.findById(req.params.id);
