@@ -4,6 +4,7 @@ const Producto = require('../models/Producto');
 const Usuario = require('../models/Usuario');
 const { proteger } = require('../middleware/authMiddleware');
 const { sendEvent } = require('../utils/sseManager');
+const { esCostoEnvioValido } = require('../utils/costoEnvio');
 
 const router = express.Router();
 
@@ -94,6 +95,7 @@ router.post('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
     const {
       productos,
       metodoPago,
+      costoEnvio: costoEnvioRecibido = 0,
       origenCotizacion = false,
       cotizacion = null,
     } = req.body;
@@ -102,6 +104,13 @@ router.post('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
       return res.status(400).json({ mensaje: 'Debes enviar productos para registrar la venta' });
     }
 
+    if (!esCostoEnvioValido(costoEnvioRecibido)) {
+      return res.status(400).json({
+        mensaje: 'El monto de envío debe ser un número mayor o igual a 0 con hasta dos decimales',
+      });
+    }
+
+    const costoEnvio = Number(costoEnvioRecibido);
     let subtotalGeneral = 0;
     let descuentoTotal = 0;
     let total = 0;
@@ -208,7 +217,8 @@ router.post('/', proteger, permitirAdminSupervisorOCajero, async (req, res) => {
       productos: detalleVenta,
       subtotal: subtotalGeneral,
       descuentoTotal,
-      total,
+      costoEnvio,
+      total: total + costoEnvio,
       metodoPago: metodoPago || 'efectivo',
       origenCotizacion: Boolean(origenCotizacion),
       usuario: req.usuario._id,

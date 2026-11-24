@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { esCostoEnvioValido } = require('../utils/costoEnvio');
 
 const detalleVentaSchema = new mongoose.Schema(
   {
@@ -121,6 +122,15 @@ const ventaSchema = new mongoose.Schema(
       type: Number,
       default: 0,
       min: 0,
+    },
+    costoEnvio: {
+      type: Number,
+      default: 0,
+      min: 0,
+      validate: {
+        validator: esCostoEnvioValido,
+        message: 'El monto de envío debe ser un número válido con hasta dos decimales',
+      },
     },
     total: {
       type: Number,
